@@ -2,135 +2,131 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Stealth Deceiver Pro</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Stealth Core V11</title>
     <style>
-        :root { --bg: #000; --card: #161618; --accent: #ff3b30; --text: #fff; --sub: #8e8e93; }
-        body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; overflow-x: hidden; }
+        :root { --bg: #000; --accent: #007AFF; --card: #1C1C1E; --text: #FFFFFF; }
+        body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding-bottom: 30px; }
         
-        /* 页面切换动画 */
-        .page { display: none; padding: 20px; animation: slideIn 0.25s ease-out; }
-        .active { display: block; }
-        @keyframes slideIn { from { transform: translateX(30px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        /* 强制美化导航栏 */
+        .nav-bar { display: flex; align-items: center; padding: 50px 20px 15px; background: rgba(0,0,0,0.8); backdrop-filter: blur(10px); sticky; top: 0; z-index: 999; border-bottom: 0.5px solid #333; }
+        .nav-title { font-size: 18px; font-weight: 700; flex: 1; text-align: center; }
+        .back-btn { font-size: 24px; color: var(--accent); cursor: pointer; width: 50px; }
 
-        /* 导航栏 */
-        .nav { display: flex; align-items: center; padding: 18px 20px; background: #000; border-bottom: 1px solid #222; position: sticky; top: 0; z-index: 100; }
-        .back-btn { font-size: 20px; margin-right: 15px; cursor: pointer; color: var(--accent); display: none; }
-        
+        .container { padding: 20px; }
+        .page { display: none; animation: fadeIn 0.3s ease; }
+        .active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }
+
         /* 卡片与列表 */
-        .card { background: var(--card); border-radius: 18px; padding: 15px; margin-bottom: 20px; border: 1px solid #2c2c2e; }
-        .app-item { display: flex; align-items: center; padding: 14px 0; border-bottom: 0.5px solid #2c2c2e; }
-        .app-info { flex: 1; margin-left: 12px; }
-        .app-name { font-weight: 600; font-size: 16px; }
-        .pkg { font-size: 11px; color: var(--sub); margin-top: 2px; }
-        
-        /* 编辑器 */
-        #configEditor { width: 100%; height: 350px; background: #0b0b0b; color: #32d74b; border: 1px solid #333; border-radius: 12px; font-family: 'Courier New', monospace; padding: 12px; box-sizing: border-box; font-size: 13px; }
-        
-        /* 按钮 */
-        .btn-main { background: var(--accent); color: white; border: none; padding: 16px; width: 100%; border-radius: 14px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px; }
-        .btn-main:active { opacity: 0.7; transform: scale(0.98); }
-        .edit-tag { font-size: 11px; color: var(--accent); border: 1px solid var(--accent); padding: 2px 6px; border-radius: 6px; }
+        .app-card { background: var(--card); border-radius: 14px; margin-bottom: 12px; padding: 16px; display: flex; align-items: center; transition: background 0.2s; }
+        .app-card:active { background: #2C2C2E; }
+        .app-icon { width: 40px; height: 40px; background: #333; border-radius: 8px; margin-right: 15px; }
+        .app-meta { flex: 1; overflow: hidden; }
+        .app-name { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .app-pkg { font-size: 11px; color: #8E8E93; }
+
+        /* 高级编辑器 */
+        #jsonEditor { width: 100%; height: 400px; background: #000; color: #00FF00; border: 1px solid #333; border-radius: 12px; padding: 12px; font-family: monospace; font-size: 12px; outline: none; }
+        .save-btn { background: var(--accent); color: #fff; border: none; width: 100%; padding: 16px; border-radius: 12px; font-weight: 600; font-size: 16px; margin-top: 20px; }
     </style>
 </head>
 <body>
-    <div class="nav">
-        <span id="backBtn" class="back-btn" onclick="showPage('mainPage')">← 返回</span>
-        <h3 id="navTitle" style="margin:0; font-size: 18px;">欺骗者协议</h3>
+    <div class="nav-bar">
+        <div id="backBtn" class="back-btn" onclick="goMain()" style="visibility: hidden;">‹</div>
+        <div id="headerTitle" class="nav-title">隐藏名单</div>
+        <div style="width: 50px;"></div>
     </div>
 
-    <div id="mainPage" class="page active">
-        <div class="card">
-            <div style="font-size: 12px; color: #32d74b; margin-bottom: 15px;">已连接内核: APatch (FolkPatch)</div>
-            <div id="appList">正在检索系统应用...</div>
+    <div class="container">
+        <div id="mainPage" class="page active">
+            <div id="statusInfo" style="font-size: 11px; color: #32d74b; margin-bottom: 15px; text-align: center;">内核状态: FolkPatch OK</div>
+            <div id="appList">正在初始化隐匿引擎...</div>
+            <button class="save-btn" onclick="syncGlobal()">保存全局策略</button>
         </div>
-        <button class="btn-main" onclick="saveGlobalList()">应用并同步配置</button>
-    </div>
 
-    <div id="detailPage" class="page">
-        <div class="card">
-            <h4 id="targetPkg" style="margin-top:0; color:var(--accent);">package.name</h4>
-            <p style="font-size: 12px; color: var(--sub);">在此定义该应用专属的动态挂载路径（JSON 数组）：</p>
-            <textarea id="configEditor"></textarea>
+        <div id="detailPage" class="page">
+            <div id="currentPkgName" style="margin-bottom: 15px; font-size: 13px; color: var(--accent);"></div>
+            <textarea id="jsonEditor" spellcheck="false"></textarea>
+            <button class="save-btn" onclick="saveConfig()">确认应用个性化配置</button>
         </div>
-        <button class="btn-main" onclick="saveAppSpecificConfig()">保存并锁定</button>
     </div>
 
     <script>
-        const BASE_DIR = "/data/adb/modules/stealth_hide";
-        let selectedApps = new Set();
+        const CONF_DIR = "/data/adb/modules/stealth_hide";
+        let selected = new Set();
         let currentPkg = "";
 
-        // 通用执行函数，确保 FolkPatch 兼容性
-        async function exec(cmd) {
-            try {
-                const res = window.ksu ? await window.ksu.exec(cmd) : await window.folk.exec(cmd);
-                return res;
-            } catch (e) {
-                return { stdout: "", stderr: e.toString() };
-            }
+        async function folkExec(cmd) {
+            try { return await window.folk.exec(cmd); } 
+            catch (e) { return { stdout: "" }; }
         }
 
         async function init() {
-            // 获取名单
-            const res = await exec("pm list packages -3 | cut -d: -f2");
-            const apps = res.stdout.trim().split('\n').sort();
-            const saved = (await exec(`cat ${BASE_DIR}/denylist.conf`)).stdout.trim().split('\n');
-            saved.forEach(p => p && selectedApps.add(p.trim()));
+            // 解决检测应用 bug：使用原生最快方式获取第三方应用
+            // 借鉴 APatch 内部逻辑，通过 pm 直接过滤
+            const res = await folkExec("pm list packages -3 | cut -d: -f2");
+            const apps = res.stdout.trim().split('\n').filter(p => p).sort();
+            
+            const saved = (await folkExec(`cat ${CONF_DIR}/denylist.conf`)).stdout.trim().split('\n');
+            saved.forEach(p => p && selected.add(p.trim()));
 
-            renderList(apps);
+            render(apps);
         }
 
-        function renderList(apps) {
+        function render(apps) {
             document.getElementById('appList').innerHTML = apps.map(p => `
-                <div class="app-item">
-                    <input type="checkbox" ${selectedApps.has(p)?'checked':''} onclick="event.stopPropagation(); toggleApp('${p}')">
-                    <div class="app-info" onclick="openAppDetail('${p}')">
+                <div class="app-card" onclick="openDetail('${p}')">
+                    <div class="app-icon"></div>
+                    <div class="app-meta">
                         <div class="app-name">${p.split('.').pop()}</div>
-                        <div class="pkg">${p}</div>
+                        <div class="app-pkg">${p}</div>
                     </div>
-                    <div class="edit-tag" onclick="openAppDetail('${p}')">配置</div>
+                    <input type="checkbox" ${selected.has(p)?'checked':''} onclick="event.stopPropagation(); toggle('${p}')">
                 </div>
             `).join('');
         }
 
-        function toggleApp(p) { selectedApps.has(p) ? selectedApps.delete(p) : selectedApps.add(p); }
+        function toggle(p) { selected.has(p) ? selected.delete(p) : selected.add(p); }
 
-        function showPage(id) {
-            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-            document.getElementById(id).classList.add('active');
-            document.getElementById('backBtn').style.display = id === 'mainPage' ? 'none' : 'block';
-            if (id === 'mainPage') document.getElementById('navTitle').innerText = "欺骗者协议";
+        function goMain() {
+            document.getElementById('detailPage').classList.remove('active');
+            document.getElementById('mainPage').classList.add('active');
+            document.getElementById('backBtn').style.visibility = "hidden";
+            document.getElementById('headerTitle').innerText = "隐藏名单";
         }
 
-        async function openAppDetail(pkg) {
+        async function openDetail(pkg) {
             currentPkg = pkg;
-            document.getElementById('navTitle').innerText = "高级配置";
-            document.getElementById('targetPkg').innerText = pkg;
-            
-            // 确保目录存在并读取 JSON
-            await exec(`mkdir -p ${BASE_DIR}/configs`);
-            const res = await exec(`cat ${BASE_DIR}/configs/${pkg}.json`);
-            const defaultConf = { "mask_paths": ["/data/dab/ap", "/proc/net/unix", "/system/bin/su"] };
-            document.getElementById('configEditor').value = res.stdout.trim() || JSON.stringify(defaultConf, null, 2);
-            
-            showPage('detailPage');
+            document.getElementById('mainPage').classList.remove('active');
+            document.getElementById('detailPage').classList.add('active');
+            document.getElementById('backBtn').style.visibility = "visible";
+            document.getElementById('headerTitle').innerText = "配置详情";
+            document.getElementById('currentPkgName').innerText = "目标: " + pkg;
+
+            const res = await folkExec(`cat ${CONF_DIR}/configs/${pkg}.json`);
+            const defaultJSON = {
+                "hide_method": "susfs_clone",
+                "mask_paths": ["/data/dab/ap", "/proc/net/unix"],
+                "spoof_build_prop": true
+            };
+            document.getElementById('jsonEditor').value = res.stdout.trim() || JSON.stringify(defaultJSON, null, 4);
         }
 
-        async function saveGlobalList() {
-            const data = Array.from(selectedApps).join('\\n');
-            await exec(`echo -e "${data}" > ${BASE_DIR}/denylist.conf`);
-            alert("全局配置已下发至内核空间");
+        async function syncGlobal() {
+            const content = Array.from(selected).join('\\n');
+            await folkExec(`echo -e "${content}" > ${CONF_DIR}/denylist.conf`);
+            alert("全局名单已成功推送到内核重定向层");
         }
 
-        async function saveAppSpecificConfig() {
-            const content = document.getElementById('configEditor').value;
-            await exec(`echo '${content}' > ${BASE_DIR}/configs/${currentPkg}.json`);
-            alert(`已为 ${currentPkg} 生成专用欺骗模版`);
-            showPage('mainPage');
+        async function saveConfig() {
+            await folkExec(`mkdir -p ${CONF_DIR}/configs`);
+            await folkExec(`echo '${document.getElementById('jsonEditor').value}' > ${CONF_DIR}/configs/${currentPkg}.json`);
+            alert("已为该应用注入高级欺骗脚本");
+            goMain();
         }
 
-        init();
+        window.onload = init;
     </script>
 </body>
 </html>
