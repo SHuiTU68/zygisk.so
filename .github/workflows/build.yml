@@ -1,4 +1,4 @@
-name: Build APatch Stealth
+name: Build Stealth Module
 
 on: [push, workflow_dispatch]
 
@@ -6,13 +6,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
       
-      - name: Setup NDK
+      - name: Setup NDK r29
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
-          ndk-version: r27b # 推荐 r27b，r29 暂不建议在 Action 环境强上
+          ndk-version: r29 # 使用你要求的 r29 版本
+          add-to-path: true
 
       - name: Build with NDK
         run: |
@@ -27,41 +29,42 @@ jobs:
           $STRIP --strip-all --remove-section=.comment --remove-section=.note libs/arm64-v8a/*.so
           $STRIP --strip-all --remove-section=.comment --remove-section=.note libs/armeabi-v7a/*.so
 
-      - name: Prepare Module Data
+      - name: Create Module Package
         run: |
           mkdir -p out/zygisk out/webroot
-          # 拷贝编译好的库
+          
+          # 拷贝编译出的库
           cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
           cp libs/armeabi-v7a/*.so out/zygisk/armeabi-v7a.so
           
-          # 拷贝 WebUI (请确保你仓库里有 webroot/index.html)
-          [ -d webroot ] && cp webroot/index.html out/webroot/ || echo "<h1>Stealth Hide Manager</h1>" > out/webroot/index.html
-          
-          # 自动生成 module.prop
+          # 自动生成 module.prop (合并写入)
           cat <<EOF > out/module.prop
           id=stealth_hide
           name=APatch Stealth Hide
-          version=v1.0.0
-          versionCode=100
-          author=Gemini_Adaptive
-          description=极致轻量化的 Zygisk 隐藏模块，专为 APatch/NeoZygisk 设计，支持进程级隔离防扫盘。
+          version=v1.1.0
+          versionCode=110
+          author=Gemini
+          description=针对 APatch 环境优化的极致隐藏模块。采用内核级命名空间隔离，支持防扫盘。
           zygisk=true
           EOF
           
-          # 自动生成简易 customize.sh
+          # 自动生成安装脚本
           cat <<EOF > out/customize.sh
-          ui_print "- 正在部署 APatch 极致隐藏环境..."
+          ui_print "- 正在初始化 APatch 隐藏环境..."
           mkdir -p /data/adb/modules/stealth_hide
           touch /data/adb/modules/stealth_hide/denylist.conf
           set_perm_recursive \$MODPATH 0 0 0755 0755
           EOF
 
-      - name: Package Release
+          # 如果仓库里没有 index.html，生成一个默认的
+          [ -f webroot/index.html ] && cp webroot/index.html out/webroot/ || echo "<h1>Stealth Hide Manager</h1>" > out/webroot/index.html
+
+      - name: Archive Release
         run: |
-          cd out && zip -r ../Stealth_APatch_v1.0.0.zip ./*
+          cd out && zip -r ../Stealth_APatch_r29.zip ./*
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Stealth_APatch_Module
-          path: Stealth_APatch_v1.0.0.zip
+          name: Stealth_APatch_r29
+          path: Stealth_APatch_r29.zip
