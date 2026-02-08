@@ -1,4 +1,4 @@
 APP_ABI := arm64-v8a armeabi-v7a
 APP_PLATFORM := android-24
-# system 模式不依赖额外的 c++_shared.so，对 APatch 极其友好
-APP_STL := system
+# 仍然使用 none 以保持极致轻量，上面的代码已经不再需要 STL 了
+APP_STL := none
