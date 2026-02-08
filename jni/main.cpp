@@ -4,7 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sched.h>
-#include <sys/mount.h>
+#include <sys/mount.h> // 必须包含，用于执行 mount
+#include <linux/sched.h>
 #include "zygisk.hpp"
 
 using zygisk::Api;
@@ -21,7 +22,7 @@ public:
         const char* process = env->GetStringUTFChars(args->nice_name, nullptr);
         if (!process) { close(fd); return; }
 
-        uint32_t len = strlen(process);
+        uint32_t len = static_cast<uint32_t>(strlen(process));
         write(fd, &len, sizeof(len));
         write(fd, process, len);
 
@@ -30,30 +31,34 @@ public:
         close(fd);
 
         if (is_denylisted) {
-            // 1. 强制 Zygisk 自动卸载所有注入挂载点
+            // [关键步骤 1] 开启 Zygisk 拒绝列表卸载机制
+            // 它是我们的“橡皮擦”，负责在应用启动那一刻擦除我们刚才做的 mount
             api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
             
-            // 2. 核心欺骗：隔离命名空间
+            // [关键步骤 2] 进入私有命名空间，防止挂载污染全局
             syscall(SYS_unshare, CLONE_NEWNS);
 
-            // 3. 针对 /proc/net/unix 的高级欺骗
-            // 游戏常通过扫描此文件发现 zygisk 或 magisk 的 socket 特征
-            // 我们通过挂载一个空的 tmpfs 文件来“诈骗”它，让它以为系统没有活动的进程间通信
-            mount("tmpfs", "/proc/net/unix", "tmpfs", MS_RDONLY, nullptr);
+            // [关键步骤 3] 执行“诈骗式”动态挂载
+            // 我们将一些干净的 tmpfs 挂载到敏感路径上，让应用读取到空内容
+            // 针对 APatch 的敏感路径进行覆盖
+            const char* targets[] = {
+                "/data/dab/ap",          // APatch 核心路径
+                "/proc/net/unix",        // 屏蔽 Socket 特征
+                "/system/bin/su",        // 屏蔽 su
+                "/data/adb/modules"      // 屏蔽模块目录
+            };
 
-            // 4. 遮蔽 APatch 特有的敏感路径 (针对 /data/dab/ap)
-            // 既然应用层不能有挂载感，我们通过 mount 劫持让这些路径彻底不可见
-            const char* root_evidence[] = {"/data/dab/ap", "/data/adb/modules", "/system/bin/su"};
-            for (const char* path : root_evidence) {
-                mount("tmpfs", path, "tmpfs", MS_RDONLY, nullptr);
+            for (const char* path : targets) {
+                // MS_RDONLY 使其不可写，MS_NOSUID 增加安全性
+                // 挂载一个空的 tmpfs 相当于在此路径上盖了一张“白纸”
+                mount("tmpfs", path, "tmpfs", MS_RDONLY | MS_NOSUID, nullptr);
             }
         }
         env->ReleaseStringUTFChars(args->nice_name, process);
     }
 
     void postAppSpecialize(const AppSpecializeArgs *) override {
-        // 5. 内存指纹擦除
-        // 模块执行完欺骗挂载后，立即卸载 .so 映射
+        // [关键步骤 4] 内存指纹清理
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
@@ -62,6 +67,7 @@ private:
     JNIEnv *env;
 };
 
+// Companion 保持简洁，仅负责名单校验
 static void companion_handler(int fd) {
     uint32_t len;
     if (read(fd, &len, sizeof(len)) <= 0) return;
@@ -73,7 +79,7 @@ static void companion_handler(int fd) {
     int c_fd = open("/data/adb/modules/stealth_hide/denylist.conf", O_RDONLY);
     if (c_fd >= 0) {
         char buf[8192];
-        int r = read(c_fd, buf, sizeof(buf) - 1);
+        ssize_t r = read(c_fd, buf, sizeof(buf) - 1);
         if (r > 0) {
             buf[r] = '\0';
             if (strstr(buf, process) != nullptr) hide = true;
