@@ -1,3 +1,8 @@
+/* * Stealth Radiance V12.1 - 修复 Build 逻辑 Bug 版
+ * 核心修复：强制开启 _GNU_SOURCE 以支持命名空间操作
+ */
+
+#define _GNU_SOURCE         // 必须在所有头文件之前，解决 CLONE_NEWNS 报错
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <fcntl.h>
@@ -5,14 +10,15 @@
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
-#include <sched.h>       // 修复：必须包含此头文件以支持 CLONE_NEWNS
+#include <sched.h>          // 核心头文件：处理 unshare
 #include <time.h>
+#include <sys/wait.h>
 #include "zygisk.hpp"
 
 using zygisk::Api;
 using zygisk::AppSpecializeArgs;
 
-// 必须在类定义之前定义 Handler
+// [修复 Bug]：Companion Handler 必须放在类定义之前，确保符号可见性
 static void companion_handler(int fd) {
     uint32_t len;
     if (read(fd, &len, sizeof(len)) <= 0) return;
@@ -21,6 +27,7 @@ static void companion_handler(int fd) {
     process[len] = '\0';
 
     bool hide = false;
+    // 路径与 WebUI 配置保持绝对一致
     int c_fd = open("/data/adb/modules/stealth_hide/denylist.conf", O_RDONLY);
     if (c_fd >= 0) {
         char buf[8192];
@@ -36,13 +43,21 @@ static void companion_handler(int fd) {
 
 class RadianceModule : public zygisk::ModuleBase {
 public:
-    void onLoad(Api *api, JNIEnv *env) override { this->api = api; this->env = env; }
+    void onLoad(Api *api, JNIEnv *env) override {
+        this->api = api;
+        this->env = env;
+    }
 
     void preAppSpecialize(AppSpecializeArgs *args) override {
         int fd = api->connectCompanion();
         if (fd < 0) return;
 
         const char* process = env->GetStringUTFChars(args->nice_name, nullptr);
+        if (!process) {
+            close(fd);
+            return;
+        }
+
         uint32_t len = (uint32_t)strlen(process);
         write(fd, &len, sizeof(len));
         write(fd, process, len);
@@ -52,24 +67,35 @@ public:
         close(fd);
 
         if (is_denylisted) {
+            // [极致隐藏 1] 强制卸载名单内的 Zygisk 痕迹
             api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
-            
-            // 混沌引擎：生成干扰进程
+
+            // [混沌引擎] 生成随机干扰进程，防止 PID 扫描
             if (fork() == 0) {
-                prctl(PR_SET_NAME, "com.google.android.gms.unstable");
+                // 伪装成 Google 基础服务
+                prctl(PR_SET_NAME, "com.google.android.gms.persistent");
                 while(true) { sleep(3600); }
                 exit(0);
             }
 
-            // 执行命名空间隔离
-            unshare(CLONE_NEWNS); // 现在头文件已包含，不再报错
-            mount("none", "/", nullptr, MS_REC | MS_PRIVATE, nullptr);
-            mount("tmpfs", "/data/dab/ap", "tmpfs", MS_RDONLY, nullptr);
+            // [极致隐藏 2] 模拟 SUSFS: 开启私有挂载命名空间
+            // 修复点：确保 unshare 在 _GNU_SOURCE 下被正确识别
+            if (unshare(CLONE_NEWNS) == 0) {
+                // 切断挂载传播，防止应用回溯挂载点
+                mount("none", "/", nullptr, MS_REC | MS_PRIVATE, nullptr);
+                
+                // [极致隐藏 3] 遮蔽 APatch/FolkPatch 核心路径
+                mount("tmpfs", "/data/dab/ap", "tmpfs", MS_RDONLY | MS_NOEXEC, nullptr);
+                
+                // 遮蔽 Socket 泄露路径
+                mount("tmpfs", "/proc/net/unix", "tmpfs", MS_RDONLY, nullptr);
+            }
         }
         env->ReleaseStringUTFChars(args->nice_name, process);
     }
 
     void postAppSpecialize(const AppSpecializeArgs *) override {
+        // [NoHello 逻辑] 初始化完成后，立即将模块 so 从内存卸载，抹除指纹
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
@@ -78,5 +104,6 @@ private:
     JNIEnv *env;
 };
 
+// 注册 Zygisk 模块及 Companion
 REGISTER_ZYGISK_MODULE(RadianceModule)
 REGISTER_ZYGISK_COMPANION(companion_handler)
