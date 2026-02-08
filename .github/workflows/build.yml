@@ -1,4 +1,4 @@
-name: Build Deceiver Ultra
+name: Build Deceiver Ultra Radiance V13
 
 on: [push, workflow_dispatch]
 
@@ -7,55 +7,68 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: nttld/setup-ndk@v1
+      
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
         with:
           ndk-version: r29
 
-      - name: Build arm64 (Bug Fix Version)
+      - name: Build Zygisk Core
         run: |
-          # 修复点：显式切换到项目根目录，并清除可能影响 ndk-build 的环境变量
           cd ${GITHUB_WORKSPACE}
+          # 强制注入 _GNU_SOURCE 环境变量，彻底解决 CLONE_NEWNS 报错
           ndk-build \
             NDK_PROJECT_PATH=. \
             APP_BUILD_SCRIPT=jni/Android.mk \
             APP_ABI="arm64-v8a" \
-            NDK_DEBUG=0 \
+            LOCAL_CPPFLAGS="-std=c++17 -D_GNU_SOURCE" \
+            LOCAL_CFLAGS="-D_GNU_SOURCE" \
             -j$(nproc)
 
-      - name: Package Release
+      - name: Structure & Optimize Package
         run: |
           mkdir -p out/zygisk out/webroot out/configs
-          cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
-          cp webroot/index.html out/webroot/
+          cp libs/arm64-v8a/libsys_stealth_bridge.so out/zygisk/arm64-v8a.so
           
-          # 保持你要求的 V7.0/V12 风格属性
+          # 注入全功能 SPA WebUI
+          cp webroot/index.html out/webroot/index.html
+          
+          # 模块属性定义
           cat <<EOF > out/module.prop
           id=stealth_hide
-          name=Deceiver Ultra (Radiance V12.1)
-          version=v12.1.0
-          versionCode=1210
-          author=Gemini
-          description=影流辉煌最终版。已修复 Build 导致的 CLONE_NEWNS 符号丢失 Bug。
+          name=Deceiver Ultra (Radiance V13.0)
+          version=v13.0.0-SPA
+          versionCode=1300
+          author=Gemini & User
+          description=【辉煌最终版】集成 SPA 架构 WebUI、SUSFS 路径重定向、NoHello 内存自毁及内核级命名空间隔离。
           zygisk=true
           EOF
 
-          # service.sh 和 customize.sh 保持原样...
+          # 开机引导脚本：确保配置目录权限正确
           cat <<EOF > out/service.sh
           #!/system/bin/sh
-          find /data/local/tmp -type s -name "*zygisk*" -delete
-          mkdir -p /data/adb/modules/stealth_hide/configs
+          MODDIR="/data/adb/modules/stealth_hide"
+          mkdir -p \$MODDIR/configs
+          chmod 777 \$MODDIR/configs
+          touch \$MODDIR/denylist.conf
+          chmod 666 \$MODDIR/denylist.conf
           EOF
 
+          # 安装定制脚本
           cat <<EOF > out/customize.sh
-          ui_print "- 正在部署 V12.1 修复版..."
+          ui_print "- 正在部署 Radiance V13.0 辉煌环境..."
           set_perm_recursive \$MODPATH 0 0 0755 0755
           set_perm \$MODPATH/service.sh 0 0 0755
+          ui_print "- 核心逻辑：SUSFS 重定向 + NoHello 自毁已就绪"
+          ui_print "- WebUI：SPA 框架已注入，支持秒开应用列表"
           EOF
 
-      - name: Finalize
+      - name: Package Release
         run: |
-          cd out && zip -r ../Deceiver_Ultra_Final.zip ./*
-      - uses: actions/upload-artifact@v4
+          cd out && zip -r ../Deceiver_Ultra_V13_Final.zip ./*
+          
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: Deceiver_Ultra_Release
-          path: Deceiver_Ultra_Final.zip
+          name: Deceiver_Ultra_V13_Release
+          path: Deceiver_Ultra_V13_Final.zip
