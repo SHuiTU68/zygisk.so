@@ -1,9 +1,9 @@
-
 #include <sys/types.h>
 #include <sys/mount.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sched.h>
+#include <string.h>
 #include "zygisk.hpp"
 
 using zygisk::Api;
@@ -15,20 +15,28 @@ public:
         this->api = api;
     }
 
+    // 在应用启动前执行，效率最高
     void preAppSpecialize(AppSpecializeArgs* args) override {
-        // [加强 1] 空间硬隔离：进入私有命名空间
+        // [隐蔽性增强] 创建私有命名空间，确保卸载操作不被外部逆向探测
         if (unshare(CLONE_NEWNS) == -1) return;
 
-        // [加强 2] 传播修改：将所有挂载设为 Slave，确保卸载操作不可逆且不被检测
-        mount("none", "/", nullptr, MS_REC | MS_SLAVE, nullptr);
+        // [效率增强] 递归设为私有挂载，阻断所有挂载信息的上报和同步
+        mount("none", "/", nullptr, MS_REC | MS_PRIVATE, nullptr);
 
-        // [加强 3] 强制抹除：针对 KernelSU 的特征路径进行懒惰卸载
-        const char* targets[] = {"/system/bin/su", "/dev/ksu", "/proc/ksu"};
-        for (const char* t : targets) {
-            umount2(t, MNT_DETACH);
+        // [精准卸载] 针对性清理，不影响模块其他组件（如 WebUI）运行
+        const char* hide_list[] = {
+            "/system/bin/su",
+            "/system/xbin/su",
+            "/dev/ksu",
+            "/proc/ksu"
+        };
+
+        for (const char* path : hide_list) {
+            // 使用 MNT_DETACH 实现秒级强制分离
+            umount2(path, MNT_DETACH);
         }
 
-        // [加强 4] 权限锁定：再次尝试禁用内核态兼容性
+        // [内核态静默] 关闭 sucompat 响应，让 App 无法通过特定 syscall 辅助提权
         int fd = open("/proc/sys/kernel/sucompat_enabled", O_WRONLY);
         if (fd != -1) {
             write(fd, "0", 1);
