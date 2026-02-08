@@ -3,73 +3,107 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Radiance Stealth Pro</title>
+    <title>Stealth Radiance Pro</title>
     <style>
-        :root { --bg: #000; --accent: #32D74B; --card: #121214; --text: #fff; }
-        body { font-family: -apple-system, system-ui; background: var(--bg); color: var(--text); margin: 0; }
+        :root { --bg: #050505; --accent: #32D74B; --card: #121214; --text: #FFFFFF; --sub: #8E8E93; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica; background: var(--bg); color: var(--text); margin: 0; -webkit-tap-highlight-color: transparent; }
         
-        /* 拟态导航栏 */
-        .header { display: flex; align-items: center; padding: 50px 20px 15px; background: rgba(18,18,20,0.8); backdrop-filter: saturate(180%) blur(20px); sticky; top: 0; z-index: 10; border-bottom: 0.5px solid #222; }
-        .back-btn { font-size: 24px; color: var(--accent); cursor: pointer; display: none; margin-right: 15px; }
-        .title { font-size: 18px; font-weight: 700; }
+        /* 高级导航栏 */
+        .nav-bar { position: sticky; top: 0; z-index: 1000; background: rgba(0,0,0,0.85); backdrop-filter: saturate(180%) blur(20px); padding: 55px 20px 15px; border-bottom: 0.5px solid #222; display: flex; align-items: center; justify-content: space-between; }
+        .nav-btn { color: var(--accent); font-size: 17px; font-weight: 500; cursor: pointer; min-width: 60px; }
+        .nav-title { font-size: 17px; font-weight: 700; letter-spacing: -0.4px; }
 
-        .content { padding: 20px; transition: 0.3s; }
+        .container { padding: 15px; max-width: 600px; margin: 0 auto; }
         .page { display: none; }
-        .active { display: block; animation: slideUp 0.3s ease; }
-        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .active { display: block; animation: pageIn 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        @keyframes pageIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
-        /* 应用列表美化 */
-        .app-item { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; display: flex; align-items: center; border: 1px solid #222; }
-        .app-icon { width: 44px; height: 44px; background: linear-gradient(135deg, #222, #333); border-radius: 10px; margin-right: 15px; }
-        .app-name { font-size: 16px; font-weight: 600; margin-bottom: 2px; }
-        .app-pkg { font-size: 11px; color: #888; }
+        /* 应用列表项 */
+        .app-item { background: var(--card); border-radius: 16px; padding: 14px; margin-bottom: 12px; display: flex; align-items: center; border: 1px solid #1c1c1e; }
+        .app-icon { width: 42px; height: 42px; background: linear-gradient(135deg, #1a1a1a, #2a2a2a); border-radius: 10px; margin-right: 15px; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #444; }
+        .app-info { flex: 1; min-width: 0; }
+        .app-name { font-size: 15px; font-weight: 600; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .app-pkg { font-size: 11px; color: var(--sub); }
+
+        /* 配置页控件 */
+        .setting-group { margin-bottom: 25px; }
+        .label { font-size: 13px; color: var(--sub); margin-bottom: 10px; display: block; padding-left: 5px; }
+        textarea { width: 100%; height: 260px; background: #000; color: #00FF41; border: 1px solid #333; border-radius: 14px; padding: 15px; font-family: 'SF Mono', 'Menlo', monospace; font-size: 12px; box-sizing: border-box; }
         
-        /* 编辑器 */
-        #editor { width: 100%; height: 450px; background: #080808; color: #00FF41; border: 1px solid #333; border-radius: 12px; padding: 15px; font-family: 'SF Mono', monospace; font-size: 12px; }
-        .btn { background: var(--accent); color: #000; border: none; width: 100%; padding: 18px; border-radius: 14px; font-weight: 700; font-size: 16px; margin-top: 20px; }
+        .toggle-card { background: var(--card); border-radius: 14px; padding: 16px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .chaos-badge { background: rgba(50, 215, 75, 0.15); color: var(--accent); font-size: 10px; padding: 2px 8px; border-radius: 20px; font-weight: bold; }
+
+        /* 按钮样式 */
+        .btn-primary { background: var(--accent); color: #000; border: none; width: 100%; padding: 18px; border-radius: 16px; font-weight: 700; font-size: 16px; cursor: pointer; margin-top: 10px; transition: 0.2s; }
+        .btn-primary:active { transform: scale(0.97); opacity: 0.8; }
+        
+        /* 搜索框 */
+        .search-box { background: var(--card); border: none; color: #fff; width: 100%; padding: 12px 15px; border-radius: 12px; margin-bottom: 20px; box-sizing: border-box; }
     </style>
 </head>
 <body>
-    <div class="header">
-        <div id="backBtn" class="back-btn" onclick="showMain()">‹</div>
-        <div id="headerTitle" class="title">隐匿中心</div>
+    <div class="nav-bar">
+        <div id="leftBtn" class="nav-btn" onclick="goBack()"></div>
+        <div id="navTitle" class="nav-title">影流辉煌 V12.1</div>
+        <div id="rightBtn" class="nav-btn" style="text-align: right;" onclick="syncAll()">同步</div>
     </div>
 
-    <div class="content">
+    <div class="container">
         <div id="mainPage" class="page active">
-            <div style="background: #1c1c1e; padding: 12px; border-radius: 10px; font-size: 11px; color: #32D74B; margin-bottom: 20px;">
-                内核引擎: SUSFS-Hybrid V12 已就绪
-            </div>
-            <div id="appList">正在扫描应用...</div>
-            <button class="btn" onclick="syncList()">同步全局隐藏</button>
+            <input type="text" class="search-box" id="search" placeholder="搜索已安装的应用..." oninput="filterApps()">
+            <div id="statusHeader" style="padding:0 0 15px 5px; font-size: 11px; color: var(--accent);">● 内核重定向已就绪 (/data/dab/ap)</div>
+            <div id="appList">正在扫描应用空间...</div>
+            <button class="btn-primary" onclick="syncAll()">保存全局策略</button>
         </div>
 
         <div id="detailPage" class="page">
-            <div id="targetApp" style="margin-bottom: 15px; color: var(--accent); font-weight: bold;"></div>
-            <textarea id="editor" spellcheck="false"></textarea>
-            <button class="btn" onclick="saveApp()">保存个性化配置</button>
+            <div class="setting-group">
+                <div class="toggle-card">
+                    <div>
+                        <div style="font-weight: 600;">混沌干扰模式</div>
+                        <div style="font-size: 11px; color: var(--sub);">生成随机进程干扰游戏特征检测</div>
+                    </div>
+                    <span class="chaos-badge">ACTIVE</span>
+                </div>
+            </div>
+
+            <div class="setting-group">
+                <span class="label">应用专属遮蔽脚本 (JSON)</span>
+                <textarea id="jsonEditor" spellcheck="false"></textarea>
+            </div>
+            
+            <button class="btn-primary" onclick="saveAppConfig()">确认并锁定配置</button>
         </div>
     </div>
 
     <script>
-        const CONF_PATH = "/data/adb/modules/stealth_hide";
+        const BASE_CONF = "/data/adb/modules/stealth_hide";
+        let allApps = [];
         let selected = new Set();
         let currentPkg = "";
 
-        async function exec(cmd) {
-            try { return await (window.folk ? window.folk.exec(cmd) : window.ksu.exec(cmd)); } 
+        async function call(cmd) {
+            try { return await (window.folk ? window.folk.exec(cmd) : window.ksu.exec(cmd)); }
             catch(e) { return { stdout: "" }; }
         }
 
         async function init() {
-            const pkgs = (await exec("pm list packages -3 | cut -d: -f2")).stdout.trim().split('\n').sort();
-            const saved = (await exec(`cat ${CONF_PATH}/denylist.conf`)).stdout.trim().split('\n');
+            // 解决扫描 Bug：直接从 APatch/Folk 能够访问的 pm 命令获取
+            const res = await call("pm list packages -3 | cut -d: -f2");
+            allApps = res.stdout.trim().split('\n').filter(p => p).sort();
+            
+            const saved = (await call(`cat ${BASE_CONF}/denylist.conf`)).stdout.trim().split('\n');
             saved.forEach(p => p && selected.add(p.trim()));
+            
+            render(allApps);
+        }
 
-            document.getElementById('appList').innerHTML = pkgs.map(p => `
-                <div class="app-item" onclick="showDetail('${p}')">
-                    <div class="app-icon"></div>
-                    <div style="flex:1">
+        function render(apps) {
+            const list = document.getElementById('appList');
+            list.innerHTML = apps.map(p => `
+                <div class="app-item" onclick="openDetail('${p}')">
+                    <div class="app-icon">${p.substring(0,2).toUpperCase()}</div>
+                    <div class="app-info">
                         <div class="app-name">${p.split('.').pop()}</div>
                         <div class="app-pkg">${p}</div>
                     </div>
@@ -78,46 +112,57 @@
             `).join('');
         }
 
+        function filterApps() {
+            const val = document.getElementById('search').value.toLowerCase();
+            const filtered = allApps.filter(p => p.toLowerCase().includes(val));
+            render(filtered);
+        }
+
         function toggle(p) { selected.has(p) ? selected.delete(p) : selected.add(p); }
 
-        function showDetail(pkg) {
+        function openDetail(pkg) {
             currentPkg = pkg;
             document.getElementById('mainPage').classList.remove('active');
             document.getElementById('detailPage').classList.add('active');
-            document.getElementById('backBtn').style.display = "block";
-            document.getElementById('headerTitle').innerText = "高级欺骗策略";
-            document.getElementById('targetApp').innerText = pkg;
             
-            loadAppConfig(pkg);
+            document.getElementById('leftBtn').innerText = "取消";
+            document.getElementById('rightBtn').style.visibility = "hidden";
+            
+document.getElementById('navTitle').innerText = "高级策略";
+            
+            loadConfig(pkg);
         }
 
-        async function loadAppConfig(pkg) {
-            const res = await exec(`cat ${CONF_PATH}/configs/${pkg}.json`);
+        async function loadConfig(pkg) {
+            const res = await call(`cat ${BASE_CONF}/configs/${pkg}.json`);
             const template = {
-                "hide_method": "susfs_clone",
-                "spoof_fingerprint": "SAMSUNG-S24-ULTRA",
-                "mask_paths": ["/data/dab/ap", "/proc/net/unix"]
+                "hide_method": "susfs_v2",
+                "chaos_mode": true,
+                "mask_paths": ["/data/dab/ap", "/proc/net/unix", "/system/bin/su"]
             };
-            document.getElementById('editor').value = res.stdout.trim() || JSON.stringify(template, null, 4);
+            document.getElementById('jsonEditor').value = res.stdout.trim() || JSON.stringify(template, null, 4);
         }
 
-        function showMain() {
+        function goBack() {
             document.getElementById('detailPage').classList.remove('active');
             document.getElementById('mainPage').classList.add('active');
-            document.getElementById('backBtn').style.display = "none";
-            document.getElementById('headerTitle').innerText = "隐匿中心";
+            document.getElementById('leftBtn').innerText = "";
+            document.getElementById('rightBtn').style.visibility = "visible";
+            document.getElementById('navTitle').innerText = "影流辉煌 V12.1";
         }
 
-        async function syncList() {
-            await exec(`echo -e "${Array.from(selected).join('\\n')}" > ${CONF_PATH}/denylist.conf`);
-            alert("全局策略已同步到内核层");
+        async function syncAll() {
+            const data = Array.from(selected).join('\\n');
+            await call(`echo -e "${data}" > ${BASE_CONF}/denylist.conf`);
+            alert("全局策略同步成功");
         }
 
-        async function saveApp() {
-            await exec(`mkdir -p ${CONF_PATH}/configs`);
-            await exec(`echo '${document.getElementById('editor').value}' > ${CONF_PATH}/configs/${currentPkg}.json`);
+        async function saveAppConfig() {
+            await call(`mkdir -p ${BASE_CONF}/configs`);
+            const code = document.getElementById('jsonEditor').value;
+            await call(`echo '${code}' > ${BASE_CONF}/configs/${currentPkg}.json`);
             alert("应用配置已更新");
-            showMain();
+            goBack();
         }
 
         window.onload = init;
