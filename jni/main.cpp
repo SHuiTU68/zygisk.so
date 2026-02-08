@@ -3,6 +3,8 @@
 #include <sys/syscall.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <string.h>   // 修复 strlen, strstr 报错
+#include <sched.h>    // 修复 CLONE_NEWNS 报错
 #include "zygisk.hpp"
 
 using zygisk::Api;
@@ -17,6 +19,8 @@ public:
         if (fd < 0) return;
 
         const char* process = env->GetStringUTFChars(args->nice_name, nullptr);
+        if (!process) return;
+
         uint32_t len = strlen(process);
         write(fd, &len, sizeof(len));
         write(fd, process, len);
@@ -26,10 +30,10 @@ public:
         close(fd);
 
         if (should_hide) {
-            // APatch 环境下最有效的进程级隔离
+            // APatch 环境下最有效的进程级解离
             syscall(SYS_unshare, CLONE_NEWNS);
 
-            // 防扫盘：在进程内用空目录遮盖敏感路径
+            // 防扫盘：在进程内掩盖敏感路径
             const char* mask_list[] = {
                 "/data/adb/neozygisk",
                 "/data/adb/rezygisk",
@@ -52,7 +56,6 @@ private:
     JNIEnv *env;
 };
 
-// 使用底层 C 函数读取配置文件，完全不依赖 STL
 static void companion_handler(int fd) {
     uint32_t len;
     if (read(fd, &len, sizeof(len)) <= 0) return;
@@ -67,7 +70,6 @@ static void companion_handler(int fd) {
         int r = read(c_fd, buf, sizeof(buf) - 1);
         if (r > 0) {
             buf[r] = '\0';
-            // 简单的字符串查找逻辑
             if (strstr(buf, process) != nullptr) hide = true;
         }
         close(c_fd);
