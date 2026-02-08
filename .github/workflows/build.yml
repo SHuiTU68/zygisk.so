@@ -1,4 +1,4 @@
-name: Build Stealth Deceiver Ultra V11
+name: Build Deceiver Ultra
 
 on: [push, workflow_dispatch]
 
@@ -7,71 +7,52 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Setup NDK r29
-        uses: nttld/setup-ndk@v1
+      - uses: nttld/setup-ndk@v1
         with:
           ndk-version: r29
 
-      - name: Build Zygisk Module
+      - name: Build arm64
         run: |
-          # 手动创建 jni/Android.mk 确保编译器链接正确
-          cat <<EOF > jni/Android.mk
-          LOCAL_PATH := \$(call my-dir)
-          include \$(CLEAR_VARS)
-          LOCAL_MODULE := sys_stealth_bridge
-          LOCAL_SRC_FILES := main.cpp
-          # 修复截图中 ifstream 报错的关键：启用完整 C++ 标准库
-          LOCAL_CPPFLAGS := -std=c++17 -fexceptions -frtti
-          LOCAL_LDLIBS := -llog -landroid
-          # 链接静态 C++ 库，防止运行时符号丢失 (__cxa_guard_release)
-          LOCAL_STATIC_LIBRARIES := c++_static
-          include \$(BUILD_SHARED_LIBRARY)
-          EOF
+          ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk APP_ABI="arm64-v8a" -j$(nproc)
 
-          cat <<EOF > jni/Application.mk
-          APP_ABI := arm64-v8a
-          APP_PLATFORM := android-24
-          APP_STL := c++_static
-          EOF
-
-          ndk-build NDK_PROJECT_PATH=. -j$(nproc)
-
-      - name: Strip & Hardening
-        run: |
-          # 使用 llvm-strip 抹除所有调试符号，模仿 NoHello 的极致隐匿
-          find libs/ -name "*.so" -exec /usr/local/lib/android/sdk/ndk/current/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip --strip-all {} +
-
-      - name: Create Module Package
+      - name: Package Release
         run: |
           mkdir -p out/zygisk out/webroot out/configs
           cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
           cp webroot/index.html out/webroot/
           
-          # module.prop
+          # 动态属性：升级到 V12.1 影流辉煌版
           cat <<EOF > out/module.prop
           id=stealth_hide
-          name=Stealth Core (SUSFS-Hybrid)
-          version=v11.0.0
-          versionCode=1100
+          name=Deceiver Ultra (Radiance V12.1)
+          version=v12.1.0
+          versionCode=1210
           author=Gemini
-          description=吸收 SUSFS 与 NoHello 隐匿技术。支持双界面配置与动态挂载。
+          description=影流辉煌最终版。集成双界面配置、混沌进程引擎、/data/dab/ap 路径遮蔽。
           zygisk=true
           EOF
 
-          # customize.sh (权限纠正)
-          cat <<EOF > out/customize.sh
-          ui_print "- 正在应用 APatch 内核层遮蔽规则..."
-          ui_print "- 目标路径: /data/dab/ap"
+          # [核心欺骗] service.sh
+          cat <<EOF > out/service.sh
+          #!/system/bin/sh
+          find /data/local/tmp -type s -name "*zygisk*" -delete
           mkdir -p /data/adb/modules/stealth_hide/configs
-          set_perm_recursive \$MODPATH 0 0 0755 0755
-          set_perm_recursive /data/adb/modules/stealth_hide 0 0 0755 0755
           EOF
 
-          cd out && zip -r ../Stealth_V11_Release.zip ./*
+          # customize.sh
+          cat <<EOF > out/customize.sh
+          ui_print "- 正在部署 V12.1 影流辉煌版..."
+          ui_print "- 核心路径适配: /data/dab/ap"
+          mkdir -p /data/adb/modules/stealth_hide/configs
+          touch /data/adb/modules/stealth_hide/denylist.conf
+          set_perm_recursive \$MODPATH 0 0 0755 0755
+          set_perm \$MODPATH/service.sh 0 0 0755
+          EOF
 
-      - name: Upload Release
-        uses: actions/upload-artifact@v4
+      - name: Finalize
+        run: |
+          cd out && zip -r ../Deceiver_Ultra_Final.zip ./*
+      - uses: actions/upload-artifact@v4
         with:
-          name: Stealth_V11_Release
-          path: Stealth_V11_Release.zip
+          name: Deceiver_Ultra_Release
+          path: Deceiver_Ultra_Final.zip
