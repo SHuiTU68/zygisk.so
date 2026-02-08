@@ -1,8 +1,4 @@
-/* * Stealth Radiance V12.1 - 修复 Build 逻辑 Bug 版
- * 核心修复：强制开启 _GNU_SOURCE 以支持命名空间操作
- */
-
-#define _GNU_SOURCE         // 必须在所有头文件之前，解决 CLONE_NEWNS 报错
+#define _GNU_SOURCE
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <fcntl.h>
@@ -10,15 +6,14 @@
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
-#include <sched.h>          // 核心头文件：处理 unshare
+#include <sched.h>
 #include <time.h>
-#include <sys/wait.h>
+#include <sys/stat.h>
 #include "zygisk.hpp"
 
 using zygisk::Api;
 using zygisk::AppSpecializeArgs;
 
-// [修复 Bug]：Companion Handler 必须放在类定义之前，确保符号可见性
 static void companion_handler(int fd) {
     uint32_t len;
     if (read(fd, &len, sizeof(len)) <= 0) return;
@@ -27,7 +22,6 @@ static void companion_handler(int fd) {
     process[len] = '\0';
 
     bool hide = false;
-    // 路径与 WebUI 配置保持绝对一致
     int c_fd = open("/data/adb/modules/stealth_hide/denylist.conf", O_RDONLY);
     if (c_fd >= 0) {
         char buf[8192];
@@ -41,7 +35,7 @@ static void companion_handler(int fd) {
     write(fd, &hide, sizeof(hide));
 }
 
-class RadianceModule : public zygisk::ModuleBase {
+class DeceiverUltra : public zygisk::ModuleBase {
 public:
     void onLoad(Api *api, JNIEnv *env) override {
         this->api = api;
@@ -53,49 +47,44 @@ public:
         if (fd < 0) return;
 
         const char* process = env->GetStringUTFChars(args->nice_name, nullptr);
-        if (!process) {
-            close(fd);
-            return;
-        }
+        if (!process) { close(fd); return; }
 
         uint32_t len = (uint32_t)strlen(process);
         write(fd, &len, sizeof(len));
         write(fd, process, len);
 
-        bool is_denylisted = false;
-        read(fd, &is_denylisted, sizeof(is_denylisted));
+        bool is_target = false;
+        read(fd, &is_target, sizeof(is_target));
         close(fd);
 
-        if (is_denylisted) {
-            // [极致隐藏 1] 强制卸载名单内的 Zygisk 痕迹
-            api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
+        if (is_target) {
+            // [真实 SUSFS 逻辑 1]: 开启私有空间并切换到递归私有挂载
+            unshare(CLONE_NEWNS);
+            mount("none", "/", nullptr, MS_REC | MS_PRIVATE, nullptr);
 
-            // [混沌引擎] 生成随机干扰进程，防止 PID 扫描
+            // [真实 SUSFS 逻辑 2]: 路径重定向 (掩盖 APatch/FolkPatch)
+            // 将 /data/dab/ap 绑定到一个无法读取的 tmpfs 上
+            mount("tmpfs", "/data/dab/ap", "tmpfs", MS_RDONLY | MS_NOATIME, "size=0,mode=000");
+            
+            // [真实 SUSFS 逻辑 3]: 抹除 Unix Socket 扫描指纹
+            mount("tmpfs", "/proc/net/unix", "tmpfs", MS_RDONLY, nullptr);
+
+            // [混沌引擎]: 生成高仿系统进程
             if (fork() == 0) {
-                // 伪装成 Google 基础服务
-                prctl(PR_SET_NAME, "com.google.android.gms.persistent");
-                while(true) { sleep(3600); }
+                prctl(PR_SET_NAME, "com.android.systemui:remote");
+                while(true) { sleep(86400); }
                 exit(0);
             }
-
-            // [极致隐藏 2] 模拟 SUSFS: 开启私有挂载命名空间
-            // 修复点：确保 unshare 在 _GNU_SOURCE 下被正确识别
-            if (unshare(CLONE_NEWNS) == 0) {
-                // 切断挂载传播，防止应用回溯挂载点
-                mount("none", "/", nullptr, MS_REC | MS_PRIVATE, nullptr);
-                
-                // [极致隐藏 3] 遮蔽 APatch/FolkPatch 核心路径
-                mount("tmpfs", "/data/dab/ap", "tmpfs", MS_RDONLY | MS_NOEXEC, nullptr);
-                
-                // 遮蔽 Socket 泄露路径
-                mount("tmpfs", "/proc/net/unix", "tmpfs", MS_RDONLY, nullptr);
-            }
+            
+            // 强制 Zygisk 卸载自身挂载点
+            api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
         }
         env->ReleaseStringUTFChars(args->nice_name, process);
     }
 
     void postAppSpecialize(const AppSpecializeArgs *) override {
-        // [NoHello 逻辑] 初始化完成后，立即将模块 so 从内存卸载，抹除指纹
+        // [真实 NoHello]: 核心功能加载完毕后，立即自毁。
+        // 这会触发 Zygisk 卸载当前 so 库在目标进程内存中的映射
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
@@ -104,6 +93,5 @@ private:
     JNIEnv *env;
 };
 
-// 注册 Zygisk 模块及 Companion
-REGISTER_ZYGISK_MODULE(RadianceModule)
+REGISTER_ZYGISK_MODULE(DeceiverUltra)
 REGISTER_ZYGISK_COMPANION(companion_handler)
