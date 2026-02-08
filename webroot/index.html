@@ -3,82 +3,73 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Stealth Core V11</title>
+    <title>Radiance Stealth Pro</title>
     <style>
-        :root { --bg: #000; --accent: #007AFF; --card: #1C1C1E; --text: #FFFFFF; }
-        body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding-bottom: 30px; }
+        :root { --bg: #000; --accent: #32D74B; --card: #121214; --text: #fff; }
+        body { font-family: -apple-system, system-ui; background: var(--bg); color: var(--text); margin: 0; }
         
-        /* 强制美化导航栏 */
-        .nav-bar { display: flex; align-items: center; padding: 50px 20px 15px; background: rgba(0,0,0,0.8); backdrop-filter: blur(10px); sticky; top: 0; z-index: 999; border-bottom: 0.5px solid #333; }
-        .nav-title { font-size: 18px; font-weight: 700; flex: 1; text-align: center; }
-        .back-btn { font-size: 24px; color: var(--accent); cursor: pointer; width: 50px; }
+        /* 拟态导航栏 */
+        .header { display: flex; align-items: center; padding: 50px 20px 15px; background: rgba(18,18,20,0.8); backdrop-filter: saturate(180%) blur(20px); sticky; top: 0; z-index: 10; border-bottom: 0.5px solid #222; }
+        .back-btn { font-size: 24px; color: var(--accent); cursor: pointer; display: none; margin-right: 15px; }
+        .title { font-size: 18px; font-weight: 700; }
 
-        .container { padding: 20px; }
-        .page { display: none; animation: fadeIn 0.3s ease; }
-        .active { display: block; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }
+        .content { padding: 20px; transition: 0.3s; }
+        .page { display: none; }
+        .active { display: block; animation: slideUp 0.3s ease; }
+        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
-        /* 卡片与列表 */
-        .app-card { background: var(--card); border-radius: 14px; margin-bottom: 12px; padding: 16px; display: flex; align-items: center; transition: background 0.2s; }
-        .app-card:active { background: #2C2C2E; }
-        .app-icon { width: 40px; height: 40px; background: #333; border-radius: 8px; margin-right: 15px; }
-        .app-meta { flex: 1; overflow: hidden; }
-        .app-name { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .app-pkg { font-size: 11px; color: #8E8E93; }
-
-        /* 高级编辑器 */
-        #jsonEditor { width: 100%; height: 400px; background: #000; color: #00FF00; border: 1px solid #333; border-radius: 12px; padding: 12px; font-family: monospace; font-size: 12px; outline: none; }
-        .save-btn { background: var(--accent); color: #fff; border: none; width: 100%; padding: 16px; border-radius: 12px; font-weight: 600; font-size: 16px; margin-top: 20px; }
+        /* 应用列表美化 */
+        .app-item { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; display: flex; align-items: center; border: 1px solid #222; }
+        .app-icon { width: 44px; height: 44px; background: linear-gradient(135deg, #222, #333); border-radius: 10px; margin-right: 15px; }
+        .app-name { font-size: 16px; font-weight: 600; margin-bottom: 2px; }
+        .app-pkg { font-size: 11px; color: #888; }
+        
+        /* 编辑器 */
+        #editor { width: 100%; height: 450px; background: #080808; color: #00FF41; border: 1px solid #333; border-radius: 12px; padding: 15px; font-family: 'SF Mono', monospace; font-size: 12px; }
+        .btn { background: var(--accent); color: #000; border: none; width: 100%; padding: 18px; border-radius: 14px; font-weight: 700; font-size: 16px; margin-top: 20px; }
     </style>
 </head>
 <body>
-    <div class="nav-bar">
-        <div id="backBtn" class="back-btn" onclick="goMain()" style="visibility: hidden;">‹</div>
-        <div id="headerTitle" class="nav-title">隐藏名单</div>
-        <div style="width: 50px;"></div>
+    <div class="header">
+        <div id="backBtn" class="back-btn" onclick="showMain()">‹</div>
+        <div id="headerTitle" class="title">隐匿中心</div>
     </div>
 
-    <div class="container">
+    <div class="content">
         <div id="mainPage" class="page active">
-            <div id="statusInfo" style="font-size: 11px; color: #32d74b; margin-bottom: 15px; text-align: center;">内核状态: FolkPatch OK</div>
-            <div id="appList">正在初始化隐匿引擎...</div>
-            <button class="save-btn" onclick="syncGlobal()">保存全局策略</button>
+            <div style="background: #1c1c1e; padding: 12px; border-radius: 10px; font-size: 11px; color: #32D74B; margin-bottom: 20px;">
+                内核引擎: SUSFS-Hybrid V12 已就绪
+            </div>
+            <div id="appList">正在扫描应用...</div>
+            <button class="btn" onclick="syncList()">同步全局隐藏</button>
         </div>
 
         <div id="detailPage" class="page">
-            <div id="currentPkgName" style="margin-bottom: 15px; font-size: 13px; color: var(--accent);"></div>
-            <textarea id="jsonEditor" spellcheck="false"></textarea>
-            <button class="save-btn" onclick="saveConfig()">确认应用个性化配置</button>
+            <div id="targetApp" style="margin-bottom: 15px; color: var(--accent); font-weight: bold;"></div>
+            <textarea id="editor" spellcheck="false"></textarea>
+            <button class="btn" onclick="saveApp()">保存个性化配置</button>
         </div>
     </div>
 
     <script>
-        const CONF_DIR = "/data/adb/modules/stealth_hide";
+        const CONF_PATH = "/data/adb/modules/stealth_hide";
         let selected = new Set();
         let currentPkg = "";
 
-        async function folkExec(cmd) {
-            try { return await window.folk.exec(cmd); } 
-            catch (e) { return { stdout: "" }; }
+        async function exec(cmd) {
+            try { return await (window.folk ? window.folk.exec(cmd) : window.ksu.exec(cmd)); } 
+            catch(e) { return { stdout: "" }; }
         }
 
         async function init() {
-            // 解决检测应用 bug：使用原生最快方式获取第三方应用
-            // 借鉴 APatch 内部逻辑，通过 pm 直接过滤
-            const res = await folkExec("pm list packages -3 | cut -d: -f2");
-            const apps = res.stdout.trim().split('\n').filter(p => p).sort();
-            
-            const saved = (await folkExec(`cat ${CONF_DIR}/denylist.conf`)).stdout.trim().split('\n');
+            const pkgs = (await exec("pm list packages -3 | cut -d: -f2")).stdout.trim().split('\n').sort();
+            const saved = (await exec(`cat ${CONF_PATH}/denylist.conf`)).stdout.trim().split('\n');
             saved.forEach(p => p && selected.add(p.trim()));
 
-            render(apps);
-        }
-
-        function render(apps) {
-            document.getElementById('appList').innerHTML = apps.map(p => `
-                <div class="app-card" onclick="openDetail('${p}')">
+            document.getElementById('appList').innerHTML = pkgs.map(p => `
+                <div class="app-item" onclick="showDetail('${p}')">
                     <div class="app-icon"></div>
-                    <div class="app-meta">
+                    <div style="flex:1">
                         <div class="app-name">${p.split('.').pop()}</div>
                         <div class="app-pkg">${p}</div>
                     </div>
@@ -89,41 +80,44 @@
 
         function toggle(p) { selected.has(p) ? selected.delete(p) : selected.add(p); }
 
-        function goMain() {
-            document.getElementById('detailPage').classList.remove('active');
-            document.getElementById('mainPage').classList.add('active');
-            document.getElementById('backBtn').style.visibility = "hidden";
-            document.getElementById('headerTitle').innerText = "隐藏名单";
-        }
-
-        async function openDetail(pkg) {
+        function showDetail(pkg) {
             currentPkg = pkg;
             document.getElementById('mainPage').classList.remove('active');
             document.getElementById('detailPage').classList.add('active');
-            document.getElementById('backBtn').style.visibility = "visible";
-            document.getElementById('headerTitle').innerText = "配置详情";
-            document.getElementById('currentPkgName').innerText = "目标: " + pkg;
+            document.getElementById('backBtn').style.display = "block";
+            document.getElementById('headerTitle').innerText = "高级欺骗策略";
+            document.getElementById('targetApp').innerText = pkg;
+            
+            loadAppConfig(pkg);
+        }
 
-            const res = await folkExec(`cat ${CONF_DIR}/configs/${pkg}.json`);
-            const defaultJSON = {
+        async function loadAppConfig(pkg) {
+            const res = await exec(`cat ${CONF_PATH}/configs/${pkg}.json`);
+            const template = {
                 "hide_method": "susfs_clone",
-                "mask_paths": ["/data/dab/ap", "/proc/net/unix"],
-                "spoof_build_prop": true
+                "spoof_fingerprint": "SAMSUNG-S24-ULTRA",
+                "mask_paths": ["/data/dab/ap", "/proc/net/unix"]
             };
-            document.getElementById('jsonEditor').value = res.stdout.trim() || JSON.stringify(defaultJSON, null, 4);
+            document.getElementById('editor').value = res.stdout.trim() || JSON.stringify(template, null, 4);
         }
 
-        async function syncGlobal() {
-            const content = Array.from(selected).join('\\n');
-            await folkExec(`echo -e "${content}" > ${CONF_DIR}/denylist.conf`);
-            alert("全局名单已成功推送到内核重定向层");
+        function showMain() {
+            document.getElementById('detailPage').classList.remove('active');
+            document.getElementById('mainPage').classList.add('active');
+            document.getElementById('backBtn').style.display = "none";
+            document.getElementById('headerTitle').innerText = "隐匿中心";
         }
 
-        async function saveConfig() {
-            await folkExec(`mkdir -p ${CONF_DIR}/configs`);
-            await folkExec(`echo '${document.getElementById('jsonEditor').value}' > ${CONF_DIR}/configs/${currentPkg}.json`);
-            alert("已为该应用注入高级欺骗脚本");
-            goMain();
+        async function syncList() {
+            await exec(`echo -e "${Array.from(selected).join('\\n')}" > ${CONF_PATH}/denylist.conf`);
+            alert("全局策略已同步到内核层");
+        }
+
+        async function saveApp() {
+            await exec(`mkdir -p ${CONF_PATH}/configs`);
+            await exec(`echo '${document.getElementById('editor').value}' > ${CONF_PATH}/configs/${currentPkg}.json`);
+            alert("应用配置已更新");
+            showMain();
         }
 
         window.onload = init;
