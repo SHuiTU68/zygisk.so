@@ -1,26 +1,68 @@
-name: Zygisk Cloud Build
-on: [push, workflow_dispatch]
+name: Build APatch Zygisk Stealth Module
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch: # 支持手动触发编译
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      - name: Setup NDK
-        uses: nttld/setup-ndk@v1
+      - name: 设置 JDK 17
+        uses: actions/setup-java@v4
         with:
-          ndk-version: r29 # 保持最新 NDK 版本
+          java-version: '17'
+          distribution: 'temurin'
 
-      - name: Compile
+      - name: 安装 Android NDK
+        uses: nndk/nndk-build-action@v1 # 自动配置 NDK 环境
+        with:
+          ndk-version: r25c
+
+      - name: 编译 Zygisk 插件 (.so)
         run: |
-          # 修复路径指向，解决 Android NDK: Aborting 错误
-          $ANDROID_NDK_ROOT/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk APP_ABI=arm64-v8a
+          # 执行 ndk-build
+          ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk APP_ABI="arm64-v8a,armeabi-v7a"
+          
+          # 极致瘦身：抹除符号表 (Strip symbols)
+          # 使用 NDK 自带的 llvm-strip 进一步压缩体积并隐藏函数名
+          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip --strip-unneeded libs/arm64-v8a/*.so
+          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip --strip-unneeded libs/armeabi-v7a/*.so
 
-      - name: Upload Artifacts
+      - name: 准备模块打包目录
+        run: |
+          mkdir -p out/zygisk
+          mkdir -p out/webroot
+          
+          # 拷贝编译好的 so 到指定位置
+          cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
+          cp libs/armeabi-v7a/*.so out/zygisk/armeabi-v7a.so
+          
+          # 拷贝 WebUI 静态资源
+          cp webroot/index.html out/webroot/
+          
+          # 拷贝模块元数据
+          cp module.prop out/
+          cp customize.sh out/
+          
+          # 创建配置文件夹占位
+          mkdir -p out/config
+          touch out/config/.placeholder
+
+      - name: 打包模块 ZIP
+        run: |
+          cd out
+          zip -r ../apatch-stealth-module.zip ./*
+
+      - name: 上传成品
         uses: actions/upload-artifact@v4
         with:
-          name: Zygisk_So
-          # 自动抓取产物，解决 No files were found 错误
-          path: libs/arm64-v8a/*.so 
+          name: APatch-Stealth-Module
+          path: apatch-stealth-module.zip
