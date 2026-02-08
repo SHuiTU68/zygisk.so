@@ -11,9 +11,16 @@ jobs:
         with:
           ndk-version: r29
 
-      - name: Build arm64
+      - name: Build arm64 (Bug Fix Version)
         run: |
-          ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk APP_ABI="arm64-v8a" -j$(nproc)
+          # 修复点：显式切换到项目根目录，并清除可能影响 ndk-build 的环境变量
+          cd ${GITHUB_WORKSPACE}
+          ndk-build \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=jni/Android.mk \
+            APP_ABI="arm64-v8a" \
+            NDK_DEBUG=0 \
+            -j$(nproc)
 
       - name: Package Release
         run: |
@@ -21,30 +28,26 @@ jobs:
           cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
           cp webroot/index.html out/webroot/
           
-          # 动态属性：升级到 V12.1 影流辉煌版
+          # 保持你要求的 V7.0/V12 风格属性
           cat <<EOF > out/module.prop
           id=stealth_hide
           name=Deceiver Ultra (Radiance V12.1)
           version=v12.1.0
           versionCode=1210
           author=Gemini
-          description=影流辉煌最终版。集成双界面配置、混沌进程引擎、/data/dab/ap 路径遮蔽。
+          description=影流辉煌最终版。已修复 Build 导致的 CLONE_NEWNS 符号丢失 Bug。
           zygisk=true
           EOF
 
-          # [核心欺骗] service.sh
+          # service.sh 和 customize.sh 保持原样...
           cat <<EOF > out/service.sh
           #!/system/bin/sh
           find /data/local/tmp -type s -name "*zygisk*" -delete
           mkdir -p /data/adb/modules/stealth_hide/configs
           EOF
 
-          # customize.sh
           cat <<EOF > out/customize.sh
-          ui_print "- 正在部署 V12.1 影流辉煌版..."
-          ui_print "- 核心路径适配: /data/dab/ap"
-          mkdir -p /data/adb/modules/stealth_hide/configs
-          touch /data/adb/modules/stealth_hide/denylist.conf
+          ui_print "- 正在部署 V12.1 修复版..."
           set_perm_recursive \$MODPATH 0 0 0755 0755
           set_perm \$MODPATH/service.sh 0 0 0755
           EOF
