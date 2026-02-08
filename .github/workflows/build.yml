@@ -5,20 +5,21 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup NDK
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r26b # 稳定版本
+          ndk-version: r27 # 使用较新版本 NDK
 
-      - name: Compile Zygisk So
+      - name: Compile
         run: |
-          $ANDROID_NDK_ROOT/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=Android.mk APP_ABI=arm64-v8a
+          # 明确指定 NDK 项目路径为 jni 所在目录
+          $ANDROID_NDK_ROOT/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk APP_ABI=arm64-v8a
 
-      - name: Upload Finished So
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: arm64-v8a_so
-          path: libs/arm64-v8a/libcustom_rezygisk.so
+          name: Zygisk_So
+          path: libs/arm64-v8a/*.so # 自动抓取任何编译出来的 .so
