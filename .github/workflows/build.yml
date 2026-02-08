@@ -1,59 +1,19 @@
-name: Build Deceiver Ultra
-
-on: [push, workflow_dispatch]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r29
-
-      - name: Build arm64
+      - name: Create Package
         run: |
-          ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk APP_ABI="arm64-v8a" -j$(nproc)
-
-      - name: Package Release
-        run: |
-          mkdir -p out/zygisk out/webroot
+          mkdir -p out/zygisk out/webroot out/configs
           cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
           cp webroot/index.html out/webroot/
           
-          # 动态属性
-          cat <<EOF > out/module.prop
-          id=stealth_hide
-          name=Deceiver Ultra (Shamiko-Plus)
-          version=v7.0.0
-          versionCode=700
-          author=Gemini
-          description=极致环境欺骗模块。支持 /proc/net/unix 伪装、/data/dab/ap 屏蔽、Socket 清理。适配 FolkPatch 管理器。
-          zygisk=true
-          EOF
-
-          # [核心欺骗] service.sh：启动时抹除所有物理存在痕迹
-          cat <<EOF > out/service.sh
-          #!/system/bin/sh
-          # 彻底清除 Zygisk Socket 残留，防止被游戏在未启动模块前扫描
-          find /data/local/tmp -type s -name "*zygisk*" -delete
-          # 预设环境配置
-          mkdir -p /data/adb/modules/stealth_hide
-          EOF
-
-          # customize.sh
+          # 动态生成安装脚本，确保目录权限正确
           cat <<EOF > out/customize.sh
-          ui_print "- 正在部署 V7.0 欺骗者协议..."
-          ui_print "- 目标内核系统: APatch / FolkPatch"
-          ui_print "- 深度防御路径: /data/dab/ap"
+          ui_print "- 正在部署 V10.0 双界面架构..."
+          ui_print "- 路径兼容确认: /data/dab/ap"
+          
+          MOD_BASE="/data/adb/modules/stealth_hide"
+          mkdir -p \$MOD_BASE/configs
+          touch \$MOD_BASE/denylist.conf
+          
           set_perm_recursive \$MODPATH 0 0 0755 0755
+          set_perm_recursive \$MOD_BASE 0 0 0755 0755
           set_perm \$MODPATH/service.sh 0 0 0755
           EOF
-
-      - name: Finalize
-        run: |
-          cd out && zip -r ../Deceiver_Ultra_Final.zip ./*
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Deceiver_Ultra_Release
-          path: Deceiver_Ultra_Final.zip
