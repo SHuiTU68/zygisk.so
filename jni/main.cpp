@@ -3,8 +3,8 @@
 #include <sys/syscall.h>
 #include <fcntl.h>
 #include <stdlib.h>
-#include <string.h>   // 必须包含：修复 strlen, strstr 报错
-#include <sched.h>    // 必须包含：修复 CLONE_NEWNS 报错
+#include <string.h>
+#include <sched.h>
 #include "zygisk.hpp"
 
 using zygisk::Api;
@@ -21,7 +21,7 @@ public:
         const char* process = env->GetStringUTFChars(args->nice_name, nullptr);
         if (!process) return;
 
-        uint32_t len = strlen(process); // 现在可以正常识别
+        uint32_t len = strlen(process);
         write(fd, &len, sizeof(len));
         write(fd, process, len);
 
@@ -30,9 +30,10 @@ public:
         close(fd);
 
         if (should_hide) {
-            // 在隔离环境内执行，确保 CLONE_NEWNS 已定义
+            // APatch 环境下最有效的进程级沙盒隔离
             syscall(SYS_unshare, CLONE_NEWNS);
 
+            // 防扫盘：遮盖敏感路径
             const char* mask_list[] = {
                 "/data/adb/neozygisk", "/data/adb/rezygisk",
                 "/data/adb/apatch", "/data/local/tmp"
@@ -45,6 +46,7 @@ public:
     }
 
     void postAppSpecialize(const AppSpecializeArgs *) override {
+        // 内存自毁，防止 maps 扫盘
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
@@ -67,7 +69,7 @@ static void companion_handler(int fd) {
         int r = read(c_fd, buf, sizeof(buf) - 1);
         if (r > 0) {
             buf[r] = '\0';
-            if (strstr(buf, process) != nullptr) hide = true; // 修复 strstr 报错
+            if (strstr(buf, process) != nullptr) hide = true;
         }
         close(c_fd);
     }
