@@ -11,15 +11,16 @@ jobs:
       - name: Setup NDK
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r27 # 使用较新版本 NDK
+          ndk-version: r29 # 保持最新 NDK 版本
 
       - name: Compile
         run: |
-          # 明确指定 NDK 项目路径为 jni 所在目录
+          # 修复路径指向，解决 Android NDK: Aborting 错误
           $ANDROID_NDK_ROOT/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk APP_ABI=arm64-v8a
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Zygisk_So
-          path: libs/arm64-v8a/*.so # 自动抓取任何编译出来的 .so
+          # 自动抓取产物，解决 No files were found 错误
+          path: libs/arm64-v8a/*.so 
