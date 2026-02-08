@@ -30,13 +30,13 @@ public:
         close(fd);
 
         if (should_hide) {
-            // APatch 环境下最有效的进程级沙盒隔离
+            // 1. APatch 核心：解离 Namespace，让游戏处于完全孤立的视图
             syscall(SYS_unshare, CLONE_NEWNS);
 
-            // 防扫盘：遮盖敏感路径
+            // 2. IO 路径全覆盖掩盖
             const char* mask_list[] = {
-                "/data/adb/neozygisk", "/data/adb/rezygisk",
-                "/data/adb/apatch", "/data/local/tmp"
+                "/data/adb/apatch", "/data/adb/modules", "/data/adb/neozygisk",
+                "/data/adb/rezygisk", "/data/local/tmp", "/proc/net/unix"
             };
             for (const char* path : mask_list) {
                 mount("tmpfs", path, "tmpfs", MS_RDONLY, nullptr);
@@ -46,7 +46,8 @@ public:
     }
 
     void postAppSpecialize(const AppSpecializeArgs *) override {
-        // 内存自毁，防止 maps 扫盘
+        // 3. 极致内存隐藏：模块加载完成后立即自毁映射
+        // 配合 Android.mk 里的伪装名，让 maps 扫描完全找不到本 so 的痕迹
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
@@ -55,6 +56,7 @@ private:
     JNIEnv *env;
 };
 
+// Companion 逻辑：由 Zygote (Root) 处理 IO，完美规避进程内 IO 检测
 static void companion_handler(int fd) {
     uint32_t len;
     if (read(fd, &len, sizeof(len)) <= 0) return;
@@ -65,7 +67,7 @@ static void companion_handler(int fd) {
     bool hide = false;
     int c_fd = open("/data/adb/modules/stealth_hide/denylist.conf", O_RDONLY);
     if (c_fd >= 0) {
-        char buf[4096];
+        char buf[8192];
         int r = read(c_fd, buf, sizeof(buf) - 1);
         if (r > 0) {
             buf[r] = '\0';
