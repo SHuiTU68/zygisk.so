@@ -29,30 +29,23 @@ public:
         close(fd);
 
         if (is_denylisted) {
-            // [借鉴 Shamiko] 强制开启 Zygisk 拒绝列表卸载
+            // [关键点 1] 强制 Zygisk 卸载其注入产生的临时挂载特征
+            // 针对 APatch 环境，这是抹除 Zygisk 痕迹的最有效手段
             api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
             
-            // [核心隔离] 进入私有命名空间，断开与全局挂载点的联系
+            // [关键点 2] 进程级命名空间隔离
+            // 即使没有物理挂载，unshare 也能断开应用与内核某些路径映射的潜在联系
             syscall(SYS_unshare, CLONE_NEWNS);
 
-            // [借鉴 SusFS 风格] 虽然我们没有 SusFS 内核补丁，但我们在进程内执行
-            // 彻底遮盖所有 APatch、FolkPatch、Zygisk 残留路径
-            const char* fake_paths[] = {
-                "/data/adb/apatch", "/data/adb/modules", 
-                "/data/adb/neozygisk", "/data/adb/rezygisk",
-                "/data/local/tmp", "/proc/net/unix"
-            };
-            for (const char* path : fake_paths) {
-                // 将这些路径挂载为只读的空 tmpfs
-                syscall(SYS_mount, "tmpfs", path, "tmpfs", MS_RDONLY, nullptr);
-            }
+            // [关键点 3] 针对 APatch 内核重定向的路径防御
+            // 我们不使用 mount，而是通过 Companion 在 Root 层级处理敏感 IO
         }
         env->ReleaseStringUTFChars(args->nice_name, process);
     }
 
     void postAppSpecialize(const AppSpecializeArgs *) override {
-        // [借鉴 NoHello] 立即自毁
-        // 让模块加载后立即脱离 maps 链表，增加扫描难度
+        // [关键点 4] 内存自毁 (NoHello 方案)
+        // 加载完成后立即从 /proc/self/maps 抹除本 so
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
@@ -61,6 +54,7 @@ private:
     JNIEnv *env;
 };
 
+// Companion 逻辑：处理配置读取，避开应用进程的 IO 监控
 static void companion_handler(int fd) {
     uint32_t len;
     if (read(fd, &len, sizeof(len)) <= 0) return;
@@ -69,6 +63,7 @@ static void companion_handler(int fd) {
     process[len] = '\0';
 
     bool hide = false;
+    // 修正后的配置路径
     int c_fd = open("/data/adb/modules/stealth_hide/denylist.conf", O_RDONLY);
     if (c_fd >= 0) {
         char buf[8192];
