@@ -1,4 +1,4 @@
-name: Build Deceiver Ultra Radiance V13
+name: Build Deceiver Ultra Radiance V13.5
 
 on: [push, workflow_dispatch]
 
@@ -16,54 +16,65 @@ jobs:
       - name: Build Zygisk Core
         run: |
           cd ${GITHUB_WORKSPACE}
-          # 强制注入 _GNU_SOURCE 环境变量，彻底解决 CLONE_NEWNS 报错
           ndk-build \
             NDK_PROJECT_PATH=. \
             APP_BUILD_SCRIPT=jni/Android.mk \
             APP_ABI="arm64-v8a" \
             LOCAL_CPPFLAGS="-std=c++17 -D_GNU_SOURCE" \
-            LOCAL_CFLAGS="-D_GNU_SOURCE" \
             -j$(nproc)
 
-      - name: Structure & Optimize Package
+      - name: Structure Package
         run: |
           mkdir -p out/zygisk out/webroot out/configs
           cp libs/arm64-v8a/libsys_stealth_bridge.so out/zygisk/arm64-v8a.so
-          
-          # 注入全功能 SPA WebUI
           cp webroot/index.html out/webroot/index.html
-          
-          # 模块属性定义
+
+          # 1. 自动生成增强版 service.sh (解决读取应用卡死)
+          cat <<'EOF' > out/service.sh
+          #!/system/bin/sh
+          MODDIR="/data/adb/modules/stealth_hide"
+          WEBROOT="$MODDIR/webroot"
+          mkdir -p $MODDIR/configs
+          mkdir -p $WEBROOT
+
+          # 核心功能：Root权限下提取App列表并转为WebUI可读的JSON
+          refresh_cache() {
+              echo "[" > "$WEBROOT/app_list.json"
+              pm list packages -3 | cut -d: -f2 | while read pkg; do
+                  echo "{\"pkg\":\"$pkg\"}," >> "$WEBROOT/app_list.json"
+              done
+              sed -i '$ s/,$//' "$WEBROOT/app_list.json"
+              echo "]" >> "$WEBROOT/app_list.json"
+              chmod 644 "$WEBROOT/app_list.json"
+          }
+
+          refresh_cache
+          chmod 777 $MODDIR/configs
+          touch $MODDIR/denylist.conf
+          chmod 666 $MODDIR/denylist.conf
+          EOF
+
+          # 2. 自动生成安装脚本
+          cat <<'EOF' > out/customize.sh
+          ui_print "- 部署 Radiance V13.5 极致环境..."
+          set_perm_recursive $MODPATH 0 0 0755 0755
+          set_perm $MODPATH/service.sh 0 0 0755
+          # 立即执行一次数据生成
+          sh $MODPATH/service.sh
+          EOF
+
+          # 3. 模块属性
           cat <<EOF > out/module.prop
           id=stealth_hide
-          name=Deceiver Ultra (Radiance V13.0)
-          version=v13.0.0-SPA
-          versionCode=1300
+          name=Deceiver Ultra (Radiance V13.5)
+          version=v13.5.0-Final
+          versionCode=1350
           author=Gemini & User
-          description=【辉煌最终版】集成 SPA 架构 WebUI、SUSFS 路径重定向、NoHello 内存自毁及内核级命名空间隔离。
+          description=【最终增强版】全框架SPA WebUI，service.sh 自动同步应用数据库。
           zygisk=true
           EOF
 
-          # 开机引导脚本：确保配置目录权限正确
-          cat <<EOF > out/service.sh
-          #!/system/bin/sh
-          MODDIR="/data/adb/modules/stealth_hide"
-          mkdir -p \$MODDIR/configs
-          chmod 777 \$MODDIR/configs
-          touch \$MODDIR/denylist.conf
-          chmod 666 \$MODDIR/denylist.conf
-          EOF
-
-          # 安装定制脚本
-          cat <<EOF > out/customize.sh
-          ui_print "- 正在部署 Radiance V13.0 辉煌环境..."
-          set_perm_recursive \$MODPATH 0 0 0755 0755
-          set_perm \$MODPATH/service.sh 0 0 0755
-          ui_print "- 核心逻辑：SUSFS 重定向 + NoHello 自毁已就绪"
-          ui_print "- WebUI：SPA 框架已注入，支持秒开应用列表"
-          EOF
-
-      - name: Package Release
+      - name: Finalize Release
         run: |
           cd out && zip -r ../Deceiver_Ultra_V13_Final.zip ./*
           
