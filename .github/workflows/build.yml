@@ -1,0 +1,24 @@
+name: Zygisk Cloud Build
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26b # 稳定版本
+
+      - name: Compile Zygisk So
+        run: |
+          $ANDROID_NDK_ROOT/ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=Android.mk APP_ABI=arm64-v8a
+
+      - name: Upload Finished So
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-v8a_so
+          path: libs/arm64-v8a/libcustom_rezygisk.so
