@@ -1,98 +1,77 @@
-name: Build Stealth Deceiver Final
+name: Build Stealth Deceiver Ultra V11
 
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+on: [push, workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-
-      - name: 配置 NDK r29
+      - uses: actions/checkout@v4
+      
+      - name: Setup NDK r29
         uses: nttld/setup-ndk@v1
-        id: setup-ndk
         with:
           ndk-version: r29
-          add-to-path: true
 
-      - name: 编译 Zygisk 模块 (仅 arm64)
+      - name: Build Zygisk Module
         run: |
-          ndk-build NDK_PROJECT_PATH=. \
-                    APP_BUILD_SCRIPT=jni/Android.mk \
-                    APP_ABI="arm64-v8a" \
-                    APP_STL="c++_static" \
-                    -j$(nproc)
+          # 手动创建 jni/Android.mk 确保编译器链接正确
+          cat <<EOF > jni/Android.mk
+          LOCAL_PATH := \$(call my-dir)
+          include \$(CLEAR_VARS)
+          LOCAL_MODULE := sys_stealth_bridge
+          LOCAL_SRC_FILES := main.cpp
+          # 修复截图中 ifstream 报错的关键：启用完整 C++ 标准库
+          LOCAL_CPPFLAGS := -std=c++17 -fexceptions -frtti
+          LOCAL_LDLIBS := -llog -landroid
+          # 链接静态 C++ 库，防止运行时符号丢失 (__cxa_guard_release)
+          LOCAL_STATIC_LIBRARIES := c++_static
+          include \$(BUILD_SHARED_LIBRARY)
+          EOF
 
-      - name: 极致混淆与体积压缩 (Strip)
+          cat <<EOF > jni/Application.mk
+          APP_ABI := arm64-v8a
+          APP_PLATFORM := android-24
+          APP_STL := c++_static
+          EOF
+
+          ndk-build NDK_PROJECT_PATH=. -j$(nproc)
+
+      - name: Strip & Hardening
         run: |
-          # 使用 NDK 路径下的 llvm-strip 抹除符号表，增加逆向难度
-          STRIP=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
-          $STRIP --strip-all --remove-section=.comment --remove-section=.note libs/arm64-v8a/*.so
+          # 使用 llvm-strip 抹除所有调试符号，模仿 NoHello 的极致隐匿
+          find libs/ -name "*.so" -exec /usr/local/lib/android/sdk/ndk/current/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip --strip-all {} +
 
-      - name: 准备模块分发包
+      - name: Create Module Package
         run: |
           mkdir -p out/zygisk out/webroot out/configs
-          
-          # 拷贝编译好的 so (重命名为 arm64-v8a.so 符合 Zygisk 规范)
           cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
+          cp webroot/index.html out/webroot/
           
-          # 拷贝双界面 WebUI
-          if [ -f webroot/index.html ]; then
-            cp webroot/index.html out/webroot/
-          else
-            echo "Error: WebUI index.html not found!" && exit 1
-          fi
-
-          # 1. 生成 module.prop (适配 FolkPatch 管理器)
+          # module.prop
           cat <<EOF > out/module.prop
           id=stealth_hide
-          name=Deceiver Pro (FolkPatch Edition)
-          version=v10.0.0
-          versionCode=1000
+          name=Stealth Core (SUSFS-Hybrid)
+          version=v11.0.0
+          versionCode=1100
           author=Gemini
-          description=极致隐藏方案。支持双界面配置、动态挂载、/proc/net/unix 欺骗。适配 APatch /data/dab/ap 路径。
+          description=吸收 SUSFS 与 NoHello 隐匿技术。支持双界面配置与动态挂载。
           zygisk=true
           EOF
 
-          # 2. 生成 service.sh (启动时清理 Zygisk 框架残留)
-          cat <<EOF > out/service.sh
-          #!/system/bin/sh
-          # 等待系统完全启动
-          sleep 5
-          # 清理 Zygisk 通信产生的 Socket 特征
-          find /data/local/tmp -maxdepth 1 -type s -name "*zygisk*" -delete
-          # 预创建配置目录
-          mkdir -p /data/adb/modules/stealth_hide/configs
-          EOF
-
-          # 3. 生成 customize.sh (安装逻辑)
+          # customize.sh (权限纠正)
           cat <<EOF > out/customize.sh
-          ui_print "- 目标内核环境: APatch / FolkPatch"
-          ui_print "- 检测核心路径: /data/dab/ap"
-          ui_print "- 正在初始化多级配置仓库..."
-          
-          # 创建并授权配置目录
+          ui_print "- 正在应用 APatch 内核层遮蔽规则..."
+          ui_print "- 目标路径: /data/dab/ap"
           mkdir -p /data/adb/modules/stealth_hide/configs
-          touch /data/adb/modules/stealth_hide/denylist.conf
-          
-          # 权限纠正
           set_perm_recursive \$MODPATH 0 0 0755 0755
           set_perm_recursive /data/adb/modules/stealth_hide 0 0 0755 0755
-          set_perm \$MODPATH/service.sh 0 0 0755
-          
-          ui_print "- 提示: 请在 FolkPatch 管理器中为本模块开启 WebUI 权限"
           EOF
 
-      - name: 压缩并打包模块
-        run: |
-          cd out && zip -r ../Deceiver_Pro_V10_Final.zip ./*
+          cd out && zip -r ../Stealth_V11_Release.zip ./*
 
-      - name: 上传构建产物
+      - name: Upload Release
         uses: actions/upload-artifact@v4
         with:
-          name: Deceiver_Pro_FolkPatch
-          path: Deceiver_Pro_V10_Final.zip
+          name: Stealth_V11_Release
+          path: Stealth_V11_Release.zip
