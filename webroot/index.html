@@ -3,116 +3,149 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Deceiver Ultra V13.5</title>
+    <title>Deceiver Ultra Full</title>
     <style>
         :root { --accent: #ff3b30; --bg: #000; --card: #1c1c1e; --text: #fff; --sub: #8e8e93; }
         body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, sans-serif; overflow: hidden; }
-        .app-shell { display: flex; flex-direction: column; height: 100vh; }
-        .header { padding: 50px 20px 10px; background: rgba(0,0,0,0.8); backdrop-filter: blur(20px); border-bottom: 0.5px solid #333; }
-        .header h1 { font-size: 24px; margin: 0; }
-        .search-area { padding: 10px 15px; }
-        .search-input { width: 100%; background: #1c1c1e; border: 1px solid #333; padding: 12px; border-radius: 12px; color: #fff; }
-        .content { flex: 1; overflow-y: auto; padding: 10px 15px 180px; }
+        .page { display: none; height: 100vh; flex-direction: column; }
+        .page.active { display: flex; }
+        .header { padding: 55px 20px 15px; border-bottom: 0.5px solid #333; background: rgba(0,0,0,0.8); backdrop-filter: blur(20px); }
+        .content { flex: 1; overflow-y: auto; padding: 15px 15px 180px; }
         
-        /* 应用卡片样式 */
+        /* 列表与搜索 */
+        .search-input { width: 100%; background: #1c1c1e; border: 1px solid #333; padding: 12px; border-radius: 12px; color: #fff; margin-bottom: 15px; }
         .app-card { background: var(--card); border-radius: 16px; padding: 14px; margin-bottom: 10px; display: flex; align-items: center; }
         .app-info { flex: 1; margin-left: 12px; }
-        .app-name { font-size: 15px; font-weight: 600; }
-        .app-pkg { font-size: 11px; color: var(--sub); }
+        
+        /* 设置项 */
+        .set-card { background: var(--card); border-radius: 12px; padding: 15px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .btn-mini { background: #333; color: #fff; border: none; padding: 8px 15px; border-radius: 8px; font-size: 12px; }
 
-        /* 核心布局：同步按钮固定在导航栏上方 */
-        .action-container { position: fixed; bottom: 75px; left: 0; right: 0; padding: 15px 20px; background: linear-gradient(to top, #000 80%, transparent); z-index: 100; }
-        .btn-main { background: var(--accent); color: #fff; width: 100%; padding: 18px; border-radius: 16px; border: none; font-weight: 800; font-size: 16px; box-shadow: 0 4px 15px rgba(255,59,48,0.3); }
+        /* 底部动作条 */
+        .action-bar { position: fixed; bottom: 85px; left: 0; right: 0; padding: 0 20px; z-index: 100; }
+        .btn-sync { background: var(--accent); color: #fff; width: 100%; padding: 18px; border-radius: 16px; border: none; font-weight: 800; }
 
-        /* 底部导航栏 */
-        .nav-bar { position: fixed; bottom: 0; width: 100%; height: 75px; background: #121212; border-top: 0.5px solid #333; display: flex; justify-content: space-around; padding-bottom: 20px; box-sizing: border-box; }
-        .nav-item { color: var(--sub); font-size: 10px; text-align: center; padding-top: 10px; }
-        .nav-item.active { color: var(--accent); }
-
-        /* 侧滑编辑页 */
-        .editor-page { position: fixed; top: 0; right: -100%; width: 100%; height: 100%; background: #000; transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); z-index: 200; display: flex; flex-direction: column; }
-        .editor-page.active { right: 0; }
-        .editor-header { padding: 50px 20px 15px; border-bottom: 0.5px solid #333; display: flex; align-items: center; }
-        textarea { flex: 1; width: calc(100% - 40px); margin: 20px; background: #080808; color: #32d74b; border: 1px solid #333; border-radius: 12px; padding: 15px; font-family: monospace; }
+        /* 底部导航 */
+        .tab-bar { position: fixed; bottom: 0; width: 100%; height: 80px; background: #121212; display: flex; justify-content: space-around; padding-top: 10px; border-top: 0.5px solid #333; }
+        .tab { color: var(--sub); text-align: center; flex: 1; cursor: pointer; }
+        .tab.active { color: var(--accent); }
+        .tab-icon { font-size: 20px; display: block; }
+        .tab-label { font-size: 10px; margin-top: 4px; }
     </style>
 </head>
 <body>
-    <div class="app-shell">
+    <div id="page-list" class="page active">
         <div class="header"><h1>控制中心</h1></div>
-        <div class="search-area"><input type="text" class="search-input" id="search" placeholder="搜索已安装的应用..." oninput="render()"></div>
-        <div class="content" id="list">正在同步数据库...</div>
-    </div>
-
-    <div class="action-container">
-        <button class="btn-main" onclick="syncAll()">应用并同步内核配置</button>
-    </div>
-
-    <div class="nav-bar">
-        <div class="nav-item active"><span>◈</span><div>列表</div></div>
-        <div class="nav-item"><span>⚙</span><div>设置</div></div>
-        <div class="nav-item"><span>ⓘ</span><div>关于</div></div>
-    </div>
-
-    <div id="editor-page" class="editor-page">
-        <div class="editor-header">
-            <span onclick="closeEditor()" style="color:var(--accent); cursor:pointer;">‹ 返回</span>
-            <div id="edit-title" style="flex:1; text-align:center; font-weight:bold;">配置</div>
+        <div class="content">
+            <input type="text" class="search-input" id="search" placeholder="搜索已安装的应用..." oninput="render()">
+            <div id="list-container">正在同步数据库...</div>
         </div>
-        <textarea id="editor-box" spellcheck="false"></textarea>
-        <div style="padding:20px;"><button class="btn-main" onclick="saveConfig()">保存策略</button></div>
     </div>
+
+    <div id="page-settings" class="page">
+        <div class="header"><h1>系统设置</h1></div>
+        <div class="content">
+            <div class="set-card">
+                <div>数据库缓存<div style="font-size:10px;color:var(--sub)">重新扫描已安装的 App</div></div>
+                <button class="btn-mini" onclick="refreshDB()">立即更新</button>
+            </div>
+            <div class="set-card">
+                <div>自毁策略<div style="font-size:10px;color:var(--sub)">NoHello 模式 (极致隐匿)</div></div>
+                <div style="color:var(--accent)">已开启</div>
+            </div>
+            <div class="set-card">
+                <div>权限修复<div style="font-size:10px;color:var(--sub)">尝试修复 WebUI 读取权限</div></div>
+                <button class="btn-mini" onclick="fixPerms()">修复</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="page-about" class="page">
+        <div class="header"><h1>关于模块</h1></div>
+        <div class="content" style="text-align:center">
+            <div style="font-size:50px; margin:30px 0">◈</div>
+            <h2 style="margin:0">Deceiver Ultra</h2>
+            <div style="color:var(--sub); margin:10px 0">版本: Radiance V13.8</div>
+            <hr style="border:0.5px solid #222; margin:20px 0">
+            <p style="font-size:13px; color:#aaa; line-height:1.6">
+                本模块专为极致隐匿设计<br>
+                支持 Zygisk NoHello 自毁协议<br>
+                内置 SUSFS 级路径重定向<br>
+                由 Gemini 与 User 协作开发
+            </p>
+        </div>
+    </div>
+
+    <div class="action-bar" id="sync-bar">
+        <button class="btn-sync" onclick="saveAll()">应用并同步内核配置</button>
+    </div>
+
+    <nav class="tab-bar">
+        <div class="tab active" onclick="showPage('list')"><span class="tab-icon">◈</span><span class="tab-label">应用</span></div>
+        <div class="tab" onclick="showPage('settings')"><span class="tab-icon">⚙</span><span class="tab-label">设置</span></div>
+        <div class="tab" onclick="showPage('about')"><span class="tab-icon">ⓘ</span><span class="tab-label">关于</span></div>
+    </nav>
 
     <script>
-        let allApps = [], selectedApps = new Set(), currentPkg = "";
+        let apps = [], selected = new Set();
         async function run(c) { try { return await (window.folk || window.ksu).exec(c); } catch(e) { return {stdout:""}; } }
 
+        function showPage(id) {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('page-' + id).classList.add('active');
+            event.currentTarget.classList.add('active');
+            document.getElementById('sync-bar').style.display = (id === 'list' ? 'block' : 'none');
+        }
+
         async function init() {
-            try {
-                // 核心突破：直接读取由 service.sh 生成的应用列表
-                const res = await fetch('app_list.json');
-                const data = await res.json();
-                allApps = data.map(i => i.pkg);
-            } catch(e) {
-                const res = await run("ls /data/data | grep '\\.'");
-                allApps = res.stdout.trim().split('\n');
+            // 穿透策略：先尝试读 local/tmp 里的缓存
+            let res = await run("cat /data/local/tmp/deceiver_apps.json");
+            if (!res.stdout) {
+                // 如果没有，尝试实时获取并通知用户
+                document.getElementById('list-container').innerText = "初次加载或权限受限，正在尝试强制扫描...";
+                await refreshDB();
+                return;
             }
-            const saved = (await run("cat /data/adb/modules/stealth_hide/denylist.conf")).stdout.trim().split('\n');
-            saved.forEach(p => p && selectedApps.add(p.trim()));
-            render();
+            try {
+                apps = JSON.parse(res.stdout).map(a => a.pkg);
+                const saved = (await run("cat /data/adb/modules/stealth_hide/denylist.conf")).stdout.trim().split('\n');
+                saved.forEach(p => p && selected.add(p.trim()));
+                render();
+            } catch(e) { document.getElementById('list-container').innerText = "数据格式错误，请点击设置-更新数据库"; }
         }
 
         function render() {
             const key = document.getElementById('search').value.toLowerCase();
-            document.getElementById('list').innerHTML = allApps.filter(p => p.includes(key)).map(p => `
-                <div class="app-card" onclick="openEditor('${p}')">
-                    <div class="app-info"><div class="app-name">${p.split('.').pop()}</div><div class="app-pkg">${p}</div></div>
-                    <input type="checkbox" style="width:20px;height:20px;" ${selectedApps.has(p)?'checked':''} onclick="event.stopPropagation(); toggle('${p}')">
+            const filtered = apps.filter(p => p.toLowerCase().includes(key));
+            document.getElementById('list-container').innerHTML = filtered.map(p => `
+                <div class="app-card">
+                    <div class="app-info">
+                        <div style="font-size:14px;font-weight:bold">${p.split('.').pop()}</div>
+                        <div style="font-size:10px;color:var(--sub)">${p}</div>
+                    </div>
+                    <input type="checkbox" style="width:22px;height:22px" ${selected.has(p)?'checked':''} onclick="toggle('${p}')">
                 </div>
             `).join('');
         }
 
-        function toggle(p) { selectedApps.has(p) ? selectedApps.delete(p) : selectedApps.add(p); }
+        function toggle(p) { selected.has(p) ? selected.delete(p) : selected.add(p); }
 
-        async function openEditor(p) {
-            currentPkg = p;
-            document.getElementById('edit-title').innerText = p.split('.').pop();
-            const res = await run(`cat /data/adb/modules/stealth_hide/configs/${p}.json`);
-            document.getElementById('editor-box').value = res.stdout.trim() || '{"susfs": true, "nohello": true}';
-            document.getElementById('editor-page').classList.add('active');
+        async function saveAll() {
+            await run(`echo -e "${Array.from(selected).join('\\n')}" > /data/adb/modules/stealth_hide/denylist.conf`);
+            alert("同步完成！配置已生效。");
         }
 
-        function closeEditor() { document.getElementById('editor-page').classList.remove('active'); }
-
-        async function saveConfig() {
-            await run(`mkdir -p /data/adb/modules/stealth_hide/configs && echo '${document.getElementById('editor-box').value}' > /data/adb/modules/stealth_hide/configs/${currentPkg}.json`);
-            alert("应用策略已锁定");
-            closeEditor();
+        async function refreshDB() {
+            await run("sh /data/adb/modules/stealth_hide/service.sh");
+            setTimeout(init, 1000);
         }
 
-        async function syncAll() {
-            await run(`echo -e "${Array.from(selectedApps).join('\\n')}" > /data/adb/modules/stealth_hide/denylist.conf`);
-            alert("同步完成！");
+        async function fixPerms() {
+            await run("chmod -R 777 /data/adb/modules/stealth_hide");
+            alert("修复完成");
         }
+
         window.onload = init;
     </script>
 </body>
