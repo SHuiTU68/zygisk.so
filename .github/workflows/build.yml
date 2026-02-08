@@ -1,4 +1,4 @@
-name: Build Stealth Final
+name: Build Stealth Final Pro
 
 on: [push, workflow_dispatch]
 
@@ -7,69 +7,52 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Setup NDK r29
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
+      - uses: nttld/setup-ndk@v1
         with:
           ndk-version: r29
 
-      - name: Build arm64 Only
+      - name: Build arm64
         run: |
-          ndk-build NDK_PROJECT_PATH=. \
-                    APP_BUILD_SCRIPT=jni/Android.mk \
-                    APP_ABI="arm64-v8a" \
-                    -j$(nproc)
+          ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk APP_ABI="arm64-v8a" -j$(nproc)
 
-      - name: Extreme Strip
-        run: |
-          STRIP=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
-          $STRIP --strip-all --remove-section=.comment --remove-section=.note libs/arm64-v8a/*.so
-
-      - name: Package Module
+      - name: Create Package
         run: |
           mkdir -p out/zygisk out/webroot
           cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
+          cp webroot/index.html out/webroot/
           
-          # 自动生成 module.prop
+          # 自动生成模块属性
           cat <<EOF > out/module.prop
           id=stealth_hide
-          name=APatch Stealth Final
-          version=v3.0.0
-          versionCode=300
+          name=APatch Stealth Final Pro
+          version=v5.0.0
+          versionCode=500
           author=Gemini
-          description=针对 APatch 极致优化。利用 Zygisk 内部 umount 机制与内存自毁，仅支持 arm64。
+          description=针对 APatch (FolkPatch) 深度定制。无挂载 IO 隔离，支持 /data/dab/ap 路径感知与内存自毁。
           zygisk=true
           EOF
 
-          # 自动生成 service.sh：用于启动时静默环境清理
+          # 生成 service.sh：启动时静默清理
           cat <<EOF > out/service.sh
           #!/system/bin/sh
-          # 延迟执行，等待系统稳定
-          sleep 10
-          # 清理可能的 Zygisk 通信残留
-          rm -rf /data/local/tmp/*zygisk*
+          # 清理 Zygisk 框架在 /data/local/tmp 产生的 socket 或文件残留
+          find /data/local/tmp -name "*zygisk*" -delete
+          # 确保配置目录存在
+          mkdir -p /data/adb/modules/stealth_hide
           EOF
 
-          # 自动生成安装脚本
+          # 生成 customize.sh
           cat <<EOF > out/customize.sh
-          ui_print "- 正在移除 32位 负载..."
-          ui_print "- 开启 Zygisk 强制卸载挂载点选项..."
-          mkdir -p /data/adb/modules/stealth_hide
-          touch /data/adb/modules/stealth_hide/denylist.conf
+          ui_print "- 正在修正 APatch 路径感知: /data/dab/ap"
+          ui_print "- 正在启用 Zygisk 进程级卸载选项"
           set_perm_recursive \$MODPATH 0 0 0755 0755
           set_perm \$MODPATH/service.sh 0 0 0755
           EOF
 
-          # 拷贝 WebUI
-          if [ -d webroot ]; then cp webroot/index.html out/webroot/; fi
-
-      - name: Archive
-        run: |
-          cd out && zip -r ../Stealth_Final_APatch.zip ./*
-
       - name: Upload
-        uses: actions/upload-artifact@v4
+        run: |
+          cd out && zip -r ../Stealth_Final_FolkPatch.zip ./*
+      - uses: actions/upload-artifact@v4
         with:
-          name: Stealth_Final_Release
-          path: Stealth_Final_APatch.zip
+          name: Stealth_Final_FolkPatch
+          path: Stealth_Final_FolkPatch.zip
