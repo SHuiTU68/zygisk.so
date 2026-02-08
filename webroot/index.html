@@ -3,106 +3,86 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Deceiver Ultra</title>
+    <title>Radiance Ultra</title>
     <style>
-        :root { --bg: #000; --accent: #ff3b30; --card: #121214; --text: #fff; }
-        body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; }
-        .header { position: sticky; top: 0; z-index: 9; padding: 50px 20px 15px; background: rgba(0,0,0,0.8); backdrop-filter: blur(10px); border-bottom: 0.5px solid #222; display: flex; align-items: center; }
-        .back-btn { font-size: 20px; color: var(--accent); cursor: pointer; display: none; margin-right: 15px; }
-        .title { font-size: 18px; font-weight: bold; flex: 1; }
-        .content { padding: 15px; }
+        :root { --bg: #000; --accent: #ff3b30; --card: #111111; --text: #fff; }
+        body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding-bottom: 50px; }
+        .nav { position: sticky; top: 0; z-index: 100; background: rgba(0,0,0,0.9); backdrop-filter: blur(20px); padding: 50px 20px 15px; border-bottom: 0.5px solid #222; display: flex; align-items: center; }
+        .nav-title { flex: 1; text-align: center; font-size: 17px; font-weight: 700; letter-spacing: -0.5px; }
+        .back-btn { color: var(--accent); font-size: 16px; width: 40px; cursor: pointer; }
+        .container { padding: 15px; }
         .page { display: none; }
         .active { display: block; }
-        .app-item { background: var(--card); border-radius: 12px; padding: 12px; margin-bottom: 8px; display: flex; align-items: center; }
-        .app-info { flex: 1; margin-left: 10px; overflow: hidden; }
-        .app-name { font-size: 14px; font-weight: 600; }
-        .app-pkg { font-size: 10px; color: #888; }
-        textarea { width: 100%; height: 350px; background: #080808; color: #32d74b; border: 1px solid #333; border-radius: 12px; padding: 12px; font-family: monospace; font-size: 12px; box-sizing: border-box; }
-        .btn { background: var(--accent); color: #fff; border: none; width: 100%; padding: 16px; border-radius: 12px; font-weight: bold; margin-top: 15px; }
+        .app-card { background: var(--card); border-radius: 14px; padding: 15px; margin-bottom: 12px; display: flex; align-items: center; transition: background 0.2s; }
+        .app-card:active { background: #1a1a1a; }
+        .app-info { flex: 1; margin-left: 15px; }
+        .app-name { font-size: 15px; font-weight: 600; }
+        .app-pkg { font-size: 11px; color: #666; margin-top: 2px; }
+        .chk { width: 22px; height: 22px; accent-color: var(--accent); }
+        .editor-wrap { background: #000; border-radius: 14px; border: 1px solid #222; overflow: hidden; margin-top: 10px; }
+        textarea { width: 100%; height: 400px; background: transparent; color: #00ff41; border: none; padding: 15px; font-family: monospace; font-size: 13px; outline: none; box-sizing: border-box; }
+        .fab { position: fixed; bottom: 30px; left: 20px; right: 20px; background: var(--accent); color: #fff; padding: 18px; border-radius: 16px; text-align: center; font-weight: 700; box-shadow: 0 10px 30px rgba(255,59,48,0.4); border: none; font-size: 16px; }
     </style>
 </head>
 <body>
-    <div class="header">
-        <div id="backBtn" class="back-btn" onclick="showMain()">←</div>
-        <div id="navTitle" class="title">欺骗者协议 V12.1</div>
+    <div class="nav">
+        <div id="back" class="back-btn" onclick="showMain()"></div>
+        <div class="nav-title" id="title">Deceiver Ultra V12.2</div>
+        <div style="width: 40px"></div>
     </div>
-    <div class="content">
-        <div id="mainPage" class="page active">
-            <div id="appList" style="color: #888; font-size: 13px; text-align: center; padding: 20px;">正在从内核同步应用空间...</div>
-            <button class="btn" onclick="syncGlobal()">同步名单至内核</button>
+    <div class="container">
+        <div id="p1" class="page active">
+            <div id="list">正在通过内核扫描应用...</div>
+            <button class="fab" onclick="sync()">应用并更新内核策略</button>
         </div>
-        <div id="detailPage" class="page">
-            <div id="targetApp" style="color: var(--accent); font-size: 13px; margin-bottom: 10px; font-weight: bold;"></div>
-            <textarea id="editor" spellcheck="false"></textarea>
-            <button class="btn" onclick="saveApp()">保存个性化策略</button>
+        <div id="p2" class="page">
+            <div id="target" style="font-size: 12px; color: #888; margin-bottom: 8px;"></div>
+            <div class="editor-wrap"><textarea id="edit"></textarea></div>
+            <button class="fab" onclick="save()">保存当前应用策略</button>
         </div>
     </div>
     <script>
-        const CONF = "/data/adb/modules/stealth_hide";
-        let selected = new Set();
-        let currentPkg = "";
-
-        async function exec(cmd) {
-            try { return await (window.folk ? window.folk.exec(cmd) : window.ksu.exec(cmd)); } 
-            catch(e) { return { stdout: "" }; }
-        }
-
+        const DIR = "/data/adb/modules/stealth_hide";
+        let sel = new Set(), cur = "";
+        async function run(c) { try { return await (window.folk||window.ksu).exec(c); } catch(e) { return {stdout:""}; } }
         async function init() {
-            // 解决卡死问题：先检查 FolkPatch 状态
-            const pkgsRes = await exec("pm list packages -3 | cut -d: -f2");
-            if (!pkgsRes.stdout) {
-                document.getElementById('appList').innerHTML = "加载失败，请在 FolkPatch 中开启 WebUI 权限";
-                return;
-            }
-            const pkgs = pkgsRes.stdout.trim().split('\n').sort();
-            const saved = (await exec(`cat ${CONF}/denylist.conf`)).stdout.trim().split('\n');
-            saved.forEach(p => p && selected.add(p.trim()));
-
-            document.getElementById('appList').innerHTML = pkgs.map(p => `
-                <div class="app-item" onclick="openDetail('${p}')">
-                    <input type="checkbox" ${selected.has(p)?'checked':''} onclick="event.stopPropagation(); toggle('${p}')">
-                    <div class="app-info">
-                        <div class="app-name">${p.split('.').pop()}</div>
-                        <div class="app-pkg">${p}</div>
-                    </div>
+            const r = await run("pm list packages -3 | cut -d: -f2");
+            const pkgs = r.stdout.trim().split('\n').filter(p=>p).sort();
+            const s = (await run(`cat ${DIR}/denylist.conf`)).stdout.trim().split('\n');
+            s.forEach(p => p && sel.add(p.trim()));
+            document.getElementById('list').innerHTML = pkgs.map(p => `
+                <div class="app-card" onclick="goEdit('${p}')">
+                    <input type="checkbox" class="chk" ${sel.has(p)?'checked':''} onclick="event.stopPropagation(); toggle('${p}')">
+                    <div class="app-info"><div class="app-name">${p.split('.').pop()}</div><div class="app-pkg">${p}</div></div>
                 </div>
             `).join('');
         }
-
-        function toggle(p) { selected.has(p) ? selected.delete(p) : selected.add(p); }
-
-        async function openDetail(pkg) {
-            currentPkg = pkg;
-            document.getElementById('mainPage').classList.remove('active');
-            document.getElementById('detailPage').classList.add('active');
-            document.getElementById('backBtn').style.display = "block";
-            document.getElementById('navTitle').innerText = "策略详情";
-            document.getElementById('targetApp').innerText = pkg;
-            
-            const res = await exec(`cat ${CONF}/configs/${pkg}.json`);
-            const template = { "hide_method": "susfs_v2", "chaos_mode": true, "mask_paths": ["/data/dab/ap", "/proc/net/unix"] };
-            document.getElementById('editor').value = res.stdout.trim() || JSON.stringify(template, null, 4);
+        function toggle(p) { sel.has(p) ? sel.delete(p) : sel.add(p); }
+        async function goEdit(p) {
+            cur = p;
+            document.getElementById('p1').classList.remove('active');
+            document.getElementById('p2').classList.add('active');
+            document.getElementById('back').innerText = "‹ 返回";
+            document.getElementById('title').innerText = "策略编辑器";
+            document.getElementById('target').innerText = "正在配置: " + p;
+            const r = await run(`cat ${DIR}/configs/${p}.json`);
+            document.getElementById('edit').value = r.stdout.trim() || JSON.stringify({hide_path:["/data/dab/ap"],susfs:true,nohello:true},null,4);
         }
-
         function showMain() {
-            document.getElementById('detailPage').classList.remove('active');
-            document.getElementById('mainPage').classList.add('active');
-            document.getElementById('backBtn').style.display = "none";
-            document.getElementById('navTitle').innerText = "欺骗者协议 V12.1";
+            document.getElementById('p2').classList.remove('active');
+            document.getElementById('p1').classList.add('active');
+            document.getElementById('back').innerText = "";
+            document.getElementById('title').innerText = "Deceiver Ultra V12.2";
         }
-
-        async function syncGlobal() {
-            await exec(`echo -e "${Array.from(selected).join('\\n')}" > ${CONF}/denylist.conf`);
-            alert("同步成功");
+        async function sync() {
+            await run(`echo -e "${Array.from(sel).join('\\n')}" > ${DIR}/denylist.conf`);
+            alert("同步成功，重启应用生效");
         }
-
-        async function saveApp() {
-            await exec(`mkdir -p ${CONF}/configs`);
-            await exec(`echo '${document.getElementById('editor').value}' > ${CONF}/configs/${currentPkg}.json`);
-            alert("配置已锁定");
+        async function save() {
+            await run(`mkdir -p ${DIR}/configs && echo '${document.getElementById('edit').value}' > ${DIR}/configs/${cur}.json`);
+            alert("保存成功");
             showMain();
         }
-
         window.onload = init;
     </script>
 </body>
