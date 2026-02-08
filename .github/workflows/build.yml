@@ -12,30 +12,56 @@ jobs:
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
-          ndk-version: r25c
+          ndk-version: r27b # 推荐 r27b，r29 暂不建议在 Action 环境强上
 
       - name: Build with NDK
         run: |
-          ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk -j$(nproc)
+          ndk-build NDK_PROJECT_PATH=. \
+                    APP_BUILD_SCRIPT=jni/Android.mk \
+                    APP_PLATFORM=android-24 \
+                    -j$(nproc)
 
       - name: Extreme Strip
         run: |
-          # 抹除所有特征，让 .so 变成“无名氏”
           STRIP=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
           $STRIP --strip-all --remove-section=.comment --remove-section=.note libs/arm64-v8a/*.so
           $STRIP --strip-all --remove-section=.comment --remove-section=.note libs/armeabi-v7a/*.so
 
-      - name: Package
+      - name: Prepare Module Data
         run: |
           mkdir -p out/zygisk out/webroot
+          # 拷贝编译好的库
           cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
           cp libs/armeabi-v7a/*.so out/zygisk/armeabi-v7a.so
-          cp webroot/index.html out/webroot/
-          cp module.prop customize.sh out/
-          cd out && zip -r ../Stealth_APatch.zip .
+          
+          # 拷贝 WebUI (请确保你仓库里有 webroot/index.html)
+          [ -d webroot ] && cp webroot/index.html out/webroot/ || echo "<h1>Stealth Hide Manager</h1>" > out/webroot/index.html
+          
+          # 自动生成 module.prop
+          cat <<EOF > out/module.prop
+          id=stealth_hide
+          name=APatch Stealth Hide
+          version=v1.0.0
+          versionCode=100
+          author=Gemini_Adaptive
+          description=极致轻量化的 Zygisk 隐藏模块，专为 APatch/NeoZygisk 设计，支持进程级隔离防扫盘。
+          zygisk=true
+          EOF
+          
+          # 自动生成简易 customize.sh
+          cat <<EOF > out/customize.sh
+          ui_print "- 正在部署 APatch 极致隐藏环境..."
+          mkdir -p /data/adb/modules/stealth_hide
+          touch /data/adb/modules/stealth_hide/denylist.conf
+          set_perm_recursive \$MODPATH 0 0 0755 0755
+          EOF
 
-      - name: Upload
+      - name: Package Release
+        run: |
+          cd out && zip -r ../Stealth_APatch_v1.0.0.zip ./*
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Stealth_APatch
-          path: Stealth_APatch.zip
+          name: Stealth_APatch_Module
+          path: Stealth_APatch_v1.0.0.zip
