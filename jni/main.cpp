@@ -3,30 +3,43 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sched.h>
 #include <sys/mount.h>
-#include <linux/sched.h>
+#include <sys/prctl.h>  // 修复：添加此头文件以支持 PR_SET_NAME
 #include <time.h>
 #include "zygisk.hpp"
 
 using zygisk::Api;
 using zygisk::AppSpecializeArgs;
 
-// 生成随机包名，模拟真实进程
+// 1. 先定义 Companion Handler，防止 REGISTER 宏找不到标识符
+static void companion_handler(int fd) {
+    uint32_t len;
+    if (read(fd, &len, sizeof(len)) <= 0) return;
+    char process[256];
+    read(fd, process, len);
+    process[len] = '\0';
+
+    bool hide = false;
+    int c_fd = open("/data/adb/modules/stealth_hide/denylist.conf", O_RDONLY);
+    if (c_fd >= 0) {
+        char buf[8192];
+        ssize_t r = read(c_fd, buf, sizeof(buf) - 1);
+        if (r > 0) {
+            buf[r] = '\0';
+            if (strstr(buf, process) != nullptr) hide = true;
+        }
+        close(c_fd);
+    }
+    write(fd, &hide, sizeof(hide));
+}
+
+// 2. 混沌干扰进程生成函数
 void spawn_decoys() {
-    const char* prefixes[] = {"com.android.", "com.google.android.", "com.qualcomm.", "system.android."};
-    const char* suffixes[] = {"service", "provider", "core", "bridge", "monitor", "vulkan"};
-    
+    const char* names[] = {"com.android.vulkan.monitor", "com.google.android.gms.core", "system_bridge_svc"};
     srand(time(NULL));
-    // 随机生成 3-5 个干扰进程
-    int count = 3 + (rand() % 3);
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < 2; i++) {
         if (fork() == 0) {
-            char name[128];
-            snprintf(name, sizeof(name), "%s%s_%d", prefixes[rand()%4], suffixes[rand()%6], rand()%999);
-            // 修改进程名，使其在 ps 命令中显得真实
-            prctl(PR_SET_NAME, name);
-            // 保持进程存活但不消耗 CPU
+            prctl(PR_SET_NAME, names[rand() % 3]); // 已经修复头文件引用
             while(true) { sleep(3600); }
             exit(0);
         }
@@ -42,7 +55,7 @@ public:
         if (fd < 0) return;
 
         const char* process = env->GetStringUTFChars(args->nice_name, nullptr);
-        uint32_t len = static_cast<uint32_t>(strlen(process));
+        uint32_t len = strlen(process);
         write(fd, &len, sizeof(len));
         write(fd, process, len);
 
@@ -52,23 +65,17 @@ public:
 
         if (is_denylisted) {
             api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
-            
-            // [混沌隐匿] 启动干扰进程
-            spawn_decoys();
-
-            // [极致隐藏] 模拟 SUSFS 隔离
-            syscall(SYS_unshare, CLONE_NEWNS);
+            spawn_decoys(); // 启动混沌引擎
+            // 模仿 SUSFS 隔离
+            unshare(CLONE_NEWNS);
             mount("none", "/", nullptr, MS_REC | MS_PRIVATE, nullptr);
-
-            // 针对 APatch 路径进行动态挂载遮蔽
             mount("tmpfs", "/data/dab/ap", "tmpfs", MS_RDONLY, nullptr);
-            mount("tmpfs", "/proc/net/unix", "tmpfs", MS_RDONLY, nullptr);
         }
         env->ReleaseStringUTFChars(args->nice_name, process);
     }
 
     void postAppSpecialize(const AppSpecializeArgs *) override {
-        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY); // NoHello 自毁
+        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY); // 自毁
     }
 
 private:
@@ -76,6 +83,5 @@ private:
     JNIEnv *env;
 };
 
-// Companion 保持不变...
 REGISTER_ZYGISK_MODULE(RadianceModule)
 REGISTER_ZYGISK_COMPANION(companion_handler)
