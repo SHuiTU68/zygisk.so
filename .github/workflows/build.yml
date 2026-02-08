@@ -1,68 +1,56 @@
-name: Build APatch Zygisk Stealth Module
+name: Build Stealth Module
 
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-  workflow_dispatch: # 支持手动触发编译
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 检出代码
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: 设置 JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: 安装 Android NDK
-        uses: nndk/nndk-build-action@v1 # 自动配置 NDK 环境
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
         with:
           ndk-version: r25c
+          add-to-path: true
 
-      - name: 编译 Zygisk 插件 (.so)
+      - name: Build with NDK
         run: |
-          # 执行 ndk-build
-          ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk APP_ABI="arm64-v8a,armeabi-v7a"
-          
-          # 极致瘦身：抹除符号表 (Strip symbols)
-          # 使用 NDK 自带的 llvm-strip 进一步压缩体积并隐藏函数名
-          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip --strip-unneeded libs/arm64-v8a/*.so
-          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip --strip-unneeded libs/armeabi-v7a/*.so
+          ndk-build NDK_PROJECT_PATH=. \
+                    APP_BUILD_SCRIPT=jni/Android.mk \
+                    APP_ABI="arm64-v8a,armeabi-v7a" \
+                    -j$(nproc)
 
-      - name: 准备模块打包目录
+      - name: Strip and Shrink SO
+        run: |
+          # 使用 llvm-strip 彻底抹除符号表，让游戏扫不到函数名特征
+          STRIP=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
+          $STRIP --strip-unneeded libs/arm64-v8a/*.so
+          $STRIP --strip-unneeded libs/armeabi-v7a/*.so
+
+      - name: Prepare Package
         run: |
           mkdir -p out/zygisk
           mkdir -p out/webroot
-          
-          # 拷贝编译好的 so 到指定位置
+          # 移动编译好的文件并重命名为标准格式
           cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
           cp libs/armeabi-v7a/*.so out/zygisk/armeabi-v7a.so
-          
-          # 拷贝 WebUI 静态资源
+          # 拷贝其他必要文件
           cp webroot/index.html out/webroot/
-          
-          # 拷贝模块元数据
           cp module.prop out/
           cp customize.sh out/
-          
-          # 创建配置文件夹占位
+          # 创建空的配置文件防止报错
           mkdir -p out/config
-          touch out/config/.placeholder
+          touch out/config/denylist.conf
 
-      - name: 打包模块 ZIP
-        run: |
-          cd out
-          zip -r ../apatch-stealth-module.zip ./*
-
-      - name: 上传成品
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: APatch-Stealth-Module
-          path: apatch-stealth-module.zip
+          name: APatch-Stealth-Hide
+          path: out/
