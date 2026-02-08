@@ -1,4 +1,4 @@
-name: Build Stealth Pro
+name: Build Stealth Final
 
 on: [push, workflow_dispatch]
 
@@ -13,9 +13,8 @@ jobs:
         id: setup-ndk
         with:
           ndk-version: r29
-          add-to-path: true
 
-      - name: Build arm64-v8a Only
+      - name: Build arm64 Only
         run: |
           ndk-build NDK_PROJECT_PATH=. \
                     APP_BUILD_SCRIPT=jni/Android.mk \
@@ -27,48 +26,50 @@ jobs:
           STRIP=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
           $STRIP --strip-all --remove-section=.comment --remove-section=.note libs/arm64-v8a/*.so
 
-      - name: Create Stealth Package
+      - name: Package Module
         run: |
           mkdir -p out/zygisk out/webroot
-          # 仅打包 arm64-v8a
           cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
-          cp webroot/index.html out/webroot/
           
-          # 集成 service.sh：用于在启动时预清理残留
+          # 自动生成 module.prop
+          cat <<EOF > out/module.prop
+          id=stealth_hide
+          name=APatch Stealth Final
+          version=v3.0.0
+          versionCode=300
+          author=Gemini
+          description=针对 APatch 极致优化。利用 Zygisk 内部 umount 机制与内存自毁，仅支持 arm64。
+          zygisk=true
+          EOF
+
+          # 自动生成 service.sh：用于启动时静默环境清理
           cat <<EOF > out/service.sh
           #!/system/bin/sh
-          MODDIR=\${0%/*}
-          # 清除可能导致扫盘的残留
+          # 延迟执行，等待系统稳定
+          sleep 10
+          # 清理可能的 Zygisk 通信残留
           rm -rf /data/local/tmp/*zygisk*
           EOF
 
-          # 增强版 module.prop
-          cat <<EOF > out/module.prop
-          id=stealth_hide
-          name=APatch Stealth Pro
-          version=v2.0.0
-          versionCode=200
-          author=Gemini
-          description=极致注入隐藏模块。采用内核级 Namespace 隔离、IO 重定向屏蔽。仅支持 arm64。
-          zygisk=true
-          EOF
-          
-          # 安装脚本
+          # 自动生成安装脚本
           cat <<EOF > out/customize.sh
-          ui_print "- 正在移除 32位 兼容层（追求极致隐蔽）"
-          ui_print "- 正在初始化 APatch 隔离视图..."
+          ui_print "- 正在移除 32位 负载..."
+          ui_print "- 开启 Zygisk 强制卸载挂载点选项..."
           mkdir -p /data/adb/modules/stealth_hide
           touch /data/adb/modules/stealth_hide/denylist.conf
           set_perm_recursive \$MODPATH 0 0 0755 0755
           set_perm \$MODPATH/service.sh 0 0 0755
           EOF
 
+          # 拷贝 WebUI
+          if [ -d webroot ]; then cp webroot/index.html out/webroot/; fi
+
       - name: Archive
         run: |
-          cd out && zip -r ../Stealth_Pro_APatch.zip ./*
+          cd out && zip -r ../Stealth_Final_APatch.zip ./*
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Stealth_Pro_Release
-          path: Stealth_Pro_APatch.zip
+          name: Stealth_Final_Release
+          path: Stealth_Final_APatch.zip
