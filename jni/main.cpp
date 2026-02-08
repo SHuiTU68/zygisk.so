@@ -24,25 +24,35 @@ public:
         write(fd, &len, sizeof(len));
         write(fd, process, len);
 
-        bool should_hide = false;
-        read(fd, &should_hide, sizeof(should_hide));
+        bool is_denylisted = false;
+        read(fd, &is_denylisted, sizeof(is_denylisted));
         close(fd);
 
-        if (should_hide) {
-            // [关键点 1] 利用 Zygisk 自身的 umount 机制
-            // 这会强制 Zygisk 卸载它为了注入而创建的所有挂载点
+        if (is_denylisted) {
+            // [借鉴 Shamiko] 强制开启 Zygisk 拒绝列表卸载
             api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
-
-            // [关键点 2] 进程级 Namespace 解离
-            // 即使没有物理挂载，解离 Namespace 也能让后续可能的扫描失效
+            
+            // [核心隔离] 进入私有命名空间，断开与全局挂载点的联系
             syscall(SYS_unshare, CLONE_NEWNS);
+
+            // [借鉴 SusFS 风格] 虽然我们没有 SusFS 内核补丁，但我们在进程内执行
+            // 彻底遮盖所有 APatch、FolkPatch、Zygisk 残留路径
+            const char* fake_paths[] = {
+                "/data/adb/apatch", "/data/adb/modules", 
+                "/data/adb/neozygisk", "/data/adb/rezygisk",
+                "/data/local/tmp", "/proc/net/unix"
+            };
+            for (const char* path : fake_paths) {
+                // 将这些路径挂载为只读的空 tmpfs
+                syscall(SYS_mount, "tmpfs", path, "tmpfs", MS_RDONLY, nullptr);
+            }
         }
         env->ReleaseStringUTFChars(args->nice_name, process);
     }
 
     void postAppSpecialize(const AppSpecializeArgs *) override {
-        // [关键点 3] 内存自毁
-        // 让加载到内存的 .so 路径彻底从 maps 中消失
+        // [借鉴 NoHello] 立即自毁
+        // 让模块加载后立即脱离 maps 链表，增加扫描难度
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
@@ -51,7 +61,6 @@ private:
     JNIEnv *env;
 };
 
-// Companion 保持底层 C 风格读取，确保极致轻量
 static void companion_handler(int fd) {
     uint32_t len;
     if (read(fd, &len, sizeof(len)) <= 0) return;
