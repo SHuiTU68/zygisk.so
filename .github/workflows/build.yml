@@ -1,19 +1,98 @@
-      - name: Create Package
+name: Build Stealth Deceiver Final
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 NDK r29
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r29
+          add-to-path: true
+
+      - name: 编译 Zygisk 模块 (仅 arm64)
+        run: |
+          ndk-build NDK_PROJECT_PATH=. \
+                    APP_BUILD_SCRIPT=jni/Android.mk \
+                    APP_ABI="arm64-v8a" \
+                    APP_STL="c++_static" \
+                    -j$(nproc)
+
+      - name: 极致混淆与体积压缩 (Strip)
+        run: |
+          # 使用 NDK 路径下的 llvm-strip 抹除符号表，增加逆向难度
+          STRIP=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
+          $STRIP --strip-all --remove-section=.comment --remove-section=.note libs/arm64-v8a/*.so
+
+      - name: 准备模块分发包
         run: |
           mkdir -p out/zygisk out/webroot out/configs
+          
+          # 拷贝编译好的 so (重命名为 arm64-v8a.so 符合 Zygisk 规范)
           cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
-          cp webroot/index.html out/webroot/
           
-          # 动态生成安装脚本，确保目录权限正确
-          cat <<EOF > out/customize.sh
-          ui_print "- 正在部署 V10.0 双界面架构..."
-          ui_print "- 路径兼容确认: /data/dab/ap"
-          
-          MOD_BASE="/data/adb/modules/stealth_hide"
-          mkdir -p \$MOD_BASE/configs
-          touch \$MOD_BASE/denylist.conf
-          
-          set_perm_recursive \$MODPATH 0 0 0755 0755
-          set_perm_recursive \$MOD_BASE 0 0 0755 0755
-          set_perm \$MODPATH/service.sh 0 0 0755
+          # 拷贝双界面 WebUI
+          if [ -f webroot/index.html ]; then
+            cp webroot/index.html out/webroot/
+          else
+            echo "Error: WebUI index.html not found!" && exit 1
+          fi
+
+          # 1. 生成 module.prop (适配 FolkPatch 管理器)
+          cat <<EOF > out/module.prop
+          id=stealth_hide
+          name=Deceiver Pro (FolkPatch Edition)
+          version=v10.0.0
+          versionCode=1000
+          author=Gemini
+          description=极致隐藏方案。支持双界面配置、动态挂载、/proc/net/unix 欺骗。适配 APatch /data/dab/ap 路径。
+          zygisk=true
           EOF
+
+          # 2. 生成 service.sh (启动时清理 Zygisk 框架残留)
+          cat <<EOF > out/service.sh
+          #!/system/bin/sh
+          # 等待系统完全启动
+          sleep 5
+          # 清理 Zygisk 通信产生的 Socket 特征
+          find /data/local/tmp -maxdepth 1 -type s -name "*zygisk*" -delete
+          # 预创建配置目录
+          mkdir -p /data/adb/modules/stealth_hide/configs
+          EOF
+
+          # 3. 生成 customize.sh (安装逻辑)
+          cat <<EOF > out/customize.sh
+          ui_print "- 目标内核环境: APatch / FolkPatch"
+          ui_print "- 检测核心路径: /data/dab/ap"
+          ui_print "- 正在初始化多级配置仓库..."
+          
+          # 创建并授权配置目录
+          mkdir -p /data/adb/modules/stealth_hide/configs
+          touch /data/adb/modules/stealth_hide/denylist.conf
+          
+          # 权限纠正
+          set_perm_recursive \$MODPATH 0 0 0755 0755
+          set_perm_recursive /data/adb/modules/stealth_hide 0 0 0755 0755
+          set_perm \$MODPATH/service.sh 0 0 0755
+          
+          ui_print "- 提示: 请在 FolkPatch 管理器中为本模块开启 WebUI 权限"
+          EOF
+
+      - name: 压缩并打包模块
+        run: |
+          cd out && zip -r ../Deceiver_Pro_V10_Final.zip ./*
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: Deceiver_Pro_FolkPatch
+          path: Deceiver_Pro_V10_Final.zip
