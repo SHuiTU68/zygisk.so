@@ -3,64 +3,52 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Stealth Pro Manager</title>
+    <title>FolkPatch Stealth Pro</title>
     <style>
-        :root { --bg: #f5f5f7; --card: #ffffff; --accent: #007aff; --danger: #ff3b30; }
-        body { font-family: -apple-system, sans-serif; background: var(--bg); margin: 0; padding: 20px; color: #1d1d1f; }
-        .card { background: var(--card); border-radius: 18px; padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); margin-bottom: 20px; }
-        h2 { margin-top: 0; font-weight: 600; font-size: 20px; }
-        .app-item { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 0.5px solid #eee; }
-        .app-info { flex: 1; }
-        .pkg-name { font-size: 12px; color: #8e8e93; }
-        .switch { position: relative; display: inline-block; width: 51px; height: 31px; }
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #e9e9eb; transition: .4s; border-radius: 34px; }
-        .slider:before { position: absolute; content: ""; height: 27px; width: 27px; left: 2px; bottom: 2px; background-color: white; transition: .4s; border-radius: 50%; box-shadow: 0 3px 8px rgba(0,0,0,0.15); }
-        input:checked + .slider { background-color: var(--accent); }
-        input:checked + .slider:before { transform: translateX(20px); }
-        .btn-save { background: var(--accent); color: white; border: none; padding: 16px; width: 100%; border-radius: 14px; font-size: 17px; font-weight: 600; margin-top: 10px; cursor: pointer; }
+        :root { --bg: #000; --accent: #007aff; --card: #1c1c1e; }
+        body { font-family: sans-serif; background: var(--bg); color: #fff; margin: 0; padding: 20px; }
+        .card { background: var(--card); border-radius: 12px; padding: 16px; margin-bottom: 20px; }
+        .app-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #2c2c2e; }
+        .status { font-size: 12px; color: #8e8e93; margin-bottom: 8px; }
+        .btn { background: var(--accent); color: #fff; border: none; padding: 14px; width: 100%; border-radius: 10px; font-size: 16px; font-weight: bold; }
+        input[type="checkbox"] { transform: scale(1.3); }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h2>隐藏名单</h2>
-        <div id="status" style="color: #8e8e93; font-size: 13px; margin-bottom: 10px;">读取中...</div>
-        <div id="appList"></div>
-    </div>
-    <button class="btn-save" onclick="save()">保存更改</button>
+    <h3>环境隐藏控制台</h3>
+    <div class="status" id="env-info">检测中...</div>
+    <div class="card" id="appList">加载中...</div>
+    <button class="btn" onclick="save()">锁定隐藏名单</button>
 
     <script>
         const CONF = "/data/adb/modules/stealth_hide/denylist.conf";
-        let selectedApps = new Set();
+        let selected = new Set();
 
         async function init() {
             try {
-                const res = await window.ksu.exec("pm list packages -3 | cut -d: -f2");
-                const apps = res.stdout.trim().split('\n').sort();
-                const current = (await window.ksu.exec(`cat ${CONF}`)).stdout.trim().split('\n');
-                current.forEach(pkg => pkg && selectedApps.add(pkg));
+                const pkgRes = await window.ksu.exec("pm list packages -3 | cut -d: -f2");
+                const apps = pkgRes.stdout.trim().split('\n').sort();
+                const confRes = await window.ksu.exec(`cat ${CONF}`);
+                confRes.stdout.split('\n').forEach(p => p && selected.add(p.trim()));
 
-                document.getElementById('appList').innerHTML = apps.map(pkg => `
-                    <div class="app-item">
-                        <div class="app-info"><div>${pkg.split('.').pop()}</div><div class="pkg-name">${pkg}</div></div>
-                        <label class="switch">
-                            <input type="checkbox" onchange="toggle('${pkg}')" ${selectedApps.has(pkg)?'checked':''}>
-                            <span class="slider"></span>
-                        </label>
+                document.getElementById('env-info').innerText = "已识别管理器: FolkPatch (me.yuki.folk)";
+                document.getElementById('appList').innerHTML = apps.map(p => `
+                    <div class="app-row">
+                        <span>${p}</span>
+                        <input type="checkbox" ${selected.has(p)?'checked':''} onclick="toggle('${p}')">
                     </div>
                 `).join('');
-                document.getElementById('status').innerText = `共检测到 ${apps.length} 个第三方应用`;
-            } catch (e) {
-                document.getElementById('status').innerText = "初始化失败: 请确保在 APatch 管理器内运行";
+            } catch(e) {
+                document.getElementById('env-info').innerText = "授权失败：请在 FolkPatch 中开启 WebUI 权限";
             }
         }
 
-        function toggle(pkg) { selectedApps.has(pkg) ? selectedApps.delete(pkg) : selectedApps.add(pkg); }
+        function toggle(p) { selected.has(p) ? selected.delete(p) : selected.add(p); }
 
         async function save() {
-            const data = Array.from(selectedApps).join('\\n');
-            await window.ksu.exec(`echo -e "${data}" > ${CONF}`);
-            alert("配置已成功下发至内核空间");
+            const content = Array.from(selected).join('\\n');
+            await window.ksu.exec(`echo -e "${content}" > ${CONF}`);
+            alert("APatch 重定向配置已同步");
         }
         init();
     </script>
