@@ -29,28 +29,24 @@ jobs:
           cp libs/arm64-v8a/libsys_stealth_bridge.so out/zygisk/arm64-v8a.so
           cp webroot/index.html out/webroot/index.html
 
-          # 1. 自动生成增强版 service.sh (解决读取应用卡死)
+            # 增强版 service.sh：数据中转站逻辑
           cat <<'EOF' > out/service.sh
           #!/system/bin/sh
           MODDIR="/data/adb/modules/stealth_hide"
-          WEBROOT="$MODDIR/webroot"
+          TMPJSON="/data/local/tmp/deceiver_apps.json"
           mkdir -p $MODDIR/configs
-          mkdir -p $WEBROOT
-
-          # 核心功能：Root权限下提取App列表并转为WebUI可读的JSON
-          refresh_cache() {
-              echo "[" > "$WEBROOT/app_list.json"
-              pm list packages -3 | cut -d: -f2 | while read pkg; do
-                  echo "{\"pkg\":\"$pkg\"}," >> "$WEBROOT/app_list.json"
-              done
-              sed -i '$ s/,$//' "$WEBROOT/app_list.json"
-              echo "]" >> "$WEBROOT/app_list.json"
-              chmod 644 "$WEBROOT/app_list.json"
-          }
-
-          refresh_cache
+          
+          # 生成 JSON 应用列表
+          echo "[" > $TMPJSON
+          pm list packages -3 | cut -d: -f2 | while read pkg; do
+              echo "{\"pkg\":\"$pkg\"}," >> $TMPJSON
+          done
+          sed -i '$ s/,$//' $TMPJSON
+          echo "]" >> $TMPJSON
+          
+          # 极度开放权限，确保 WebUI 能读到
+          chmod 666 $TMPJSON
           chmod 777 $MODDIR/configs
-          touch $MODDIR/denylist.conf
           chmod 666 $MODDIR/denylist.conf
           EOF
 
