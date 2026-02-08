@@ -4,14 +4,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mount.h>
-#include <sys/prctl.h>  // 修复：添加此头文件以支持 PR_SET_NAME
+#include <sys/prctl.h>
+#include <sched.h>       // 修复：必须包含此头文件以支持 CLONE_NEWNS
 #include <time.h>
 #include "zygisk.hpp"
 
 using zygisk::Api;
 using zygisk::AppSpecializeArgs;
 
-// 1. 先定义 Companion Handler，防止 REGISTER 宏找不到标识符
+// 必须在类定义之前定义 Handler
 static void companion_handler(int fd) {
     uint32_t len;
     if (read(fd, &len, sizeof(len)) <= 0) return;
@@ -33,19 +34,6 @@ static void companion_handler(int fd) {
     write(fd, &hide, sizeof(hide));
 }
 
-// 2. 混沌干扰进程生成函数
-void spawn_decoys() {
-    const char* names[] = {"com.android.vulkan.monitor", "com.google.android.gms.core", "system_bridge_svc"};
-    srand(time(NULL));
-    for (int i = 0; i < 2; i++) {
-        if (fork() == 0) {
-            prctl(PR_SET_NAME, names[rand() % 3]); // 已经修复头文件引用
-            while(true) { sleep(3600); }
-            exit(0);
-        }
-    }
-}
-
 class RadianceModule : public zygisk::ModuleBase {
 public:
     void onLoad(Api *api, JNIEnv *env) override { this->api = api; this->env = env; }
@@ -55,7 +43,7 @@ public:
         if (fd < 0) return;
 
         const char* process = env->GetStringUTFChars(args->nice_name, nullptr);
-        uint32_t len = strlen(process);
+        uint32_t len = (uint32_t)strlen(process);
         write(fd, &len, sizeof(len));
         write(fd, process, len);
 
@@ -65,9 +53,16 @@ public:
 
         if (is_denylisted) {
             api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
-            spawn_decoys(); // 启动混沌引擎
-            // 模仿 SUSFS 隔离
-            unshare(CLONE_NEWNS);
+            
+            // 混沌引擎：生成干扰进程
+            if (fork() == 0) {
+                prctl(PR_SET_NAME, "com.google.android.gms.unstable");
+                while(true) { sleep(3600); }
+                exit(0);
+            }
+
+            // 执行命名空间隔离
+            unshare(CLONE_NEWNS); // 现在头文件已包含，不再报错
             mount("none", "/", nullptr, MS_REC | MS_PRIVATE, nullptr);
             mount("tmpfs", "/data/dab/ap", "tmpfs", MS_RDONLY, nullptr);
         }
@@ -75,7 +70,7 @@ public:
     }
 
     void postAppSpecialize(const AppSpecializeArgs *) override {
-        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY); // 自毁
+        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
 private:
