@@ -1,56 +1,39 @@
-name: Build Stealth Module
+name: Build APatch Stealth
 
-on:
-  push:
-    branches: [ "main" ]
-  workflow_dispatch:
+on: [push, workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup NDK
-        uses: nttld/setup-ndk@v1
+      - uses: actions/checkout@v4
+      - uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
           ndk-version: r25c
-          add-to-path: true
 
-      - name: Build with NDK
+      - name: Build
         run: |
-          ndk-build NDK_PROJECT_PATH=. \
-                    APP_BUILD_SCRIPT=jni/Android.mk \
-                    APP_ABI="arm64-v8a,armeabi-v7a" \
-                    -j$(nproc)
+          ndk-build NDK_PROJECT_PATH=. APP_BUILD_SCRIPT=jni/Android.mk -j$(nproc)
 
-      - name: Strip and Shrink SO
+      - name: Extreme Strip
         run: |
-          # 使用 llvm-strip 彻底抹除符号表，让游戏扫不到函数名特征
+          # 彻底剔除 .so 中的所有特征字符串
           STRIP=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
-          $STRIP --strip-unneeded libs/arm64-v8a/*.so
-          $STRIP --strip-unneeded libs/armeabi-v7a/*.so
+          $STRIP --strip-all --remove-section=.comment --remove-section=.note libs/arm64-v8a/*.so
+          $STRIP --strip-all --remove-section=.comment --remove-section=.note libs/armeabi-v7a/*.so
 
-      - name: Prepare Package
+      - name: Package
         run: |
-          mkdir -p out/zygisk
-          mkdir -p out/webroot
-          # 移动编译好的文件并重命名为标准格式
+          mkdir -p out/zygisk out/webroot
           cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
           cp libs/armeabi-v7a/*.so out/zygisk/armeabi-v7a.so
-          # 拷贝其他必要文件
           cp webroot/index.html out/webroot/
-          cp module.prop out/
-          cp customize.sh out/
-          # 创建空的配置文件防止报错
-          mkdir -p out/config
-          touch out/config/denylist.conf
+          cp module.prop customize.sh out/
+          cd out && zip -r ../Stealth_APatch.zip .
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: APatch-Stealth-Hide
-          path: out/
+          name: Stealth_APatch_Module
+          path: Stealth_APatch.zip
