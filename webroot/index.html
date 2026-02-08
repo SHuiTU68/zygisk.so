@@ -3,31 +3,33 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Stealth Core (Shamiko Style)</title>
+    <title>Deceiver Pro Manager</title>
     <style>
-        :root { --accent: #2ecc71; --bg: #000; }
-        body { font-family: 'Segoe UI', sans-serif; background: var(--bg); color: #eee; padding: 25px; }
-        .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 30px; }
-        .status-dot { height: 10px; width: 10px; background: var(--accent); border-radius: 50%; display: inline-block; }
-        .card { background: #111; border: 1px solid #222; border-radius: 15px; padding: 15px; }
-        .app-item { display: flex; align-items: center; padding: 15px 0; border-bottom: 1px solid #222; }
-        .app-item:last-child { border: none; }
-        .app-info { flex-grow: 1; margin-left: 15px; }
-        .pkg { font-size: 0.75em; color: #666; }
-        .save-btn { background: var(--accent); color: #000; border: none; width: 100%; padding: 18px; border-radius: 12px; font-weight: bold; margin-top: 25px; box-shadow: 0 4px 15px rgba(46, 204, 113, 0.2); }
+        :root { --main: #ff3b30; --bg: #000; --card: #1c1c1e; }
+        body { font-family: -apple-system, sans-serif; background: var(--bg); color: white; padding: 20px; }
+        .card { background: var(--card); border-radius: 15px; padding: 18px; margin-bottom: 20px; border: 1px solid #2c2c2e; }
+        .title-group { margin-bottom: 25px; }
+        .title-group h1 { font-size: 24px; margin: 0; }
+        .title-group p { color: #8e8e93; font-size: 13px; }
+        .app-list { max-height: 350px; overflow-y: auto; }
+        .app-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #2c2c2e; }
+        .btn-apply { background: var(--main); color: white; border: none; width: 100%; padding: 16px; border-radius: 12px; font-weight: 600; font-size: 16px; transition: 0.2s; }
+        .btn-apply:active { transform: scale(0.98); opacity: 0.8; }
+        .badge { background: #32d74b; color: black; font-size: 10px; padding: 2px 6px; border-radius: 4px; vertical-align: middle; }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h2>Stealth 核心</h2>
-        <span><span class="status-dot"></span> 内核重定向就绪</span>
+    <div class="title-group">
+        <h1>欺骗者协议 <span class="badge">V7 ACTIVE</span></h1>
+        <p>适配 FolkPatch 管理器 & /data/dab/ap 路径</p>
     </div>
 
-    <div class="card" id="list">
-        <div style="text-align: center; padding: 20px;">正在从 FolkPatch 获取应用列表...</div>
+    <div class="card">
+        <div style="font-size: 14px; margin-bottom: 15px; color: #32d74b;">● 系统伪装：已重定向 /proc/net/unix</div>
+        <div class="app-list" id="appList">正在扫描第三方应用...</div>
     </div>
 
-    <button class="save-btn" onclick="apply()">应用更改并清理残留</button>
+    <button class="btn-apply" onclick="save()">同步欺骗名单至内核</button>
 
     <script>
         const CONF = "/data/adb/modules/stealth_hide/denylist.conf";
@@ -35,29 +37,28 @@
 
         async function init() {
             try {
-                const pkgs = await window.ksu.exec("pm list packages -3 | cut -d: -f2");
-                const apps = pkgs.stdout.trim().split('\n').sort();
-                const current = (await window.ksu.exec(`cat ${CONF}`)).stdout.trim().split('\n');
-                current.forEach(p => p && selected.add(p));
+                const pkgData = await window.ksu.exec("pm list packages -3 | cut -d: -f2");
+                const apps = pkgData.stdout.trim().split('\n').sort();
+                const confData = await window.ksu.exec(`cat ${CONF}`);
+                confData.stdout.split('\n').forEach(p => p && selected.add(p.trim()));
 
-                document.getElementById('list').innerHTML = apps.map(p => `
-                    <div class="app-item">
+                document.getElementById('appList').innerHTML = apps.map(p => `
+                    <div class="app-row">
+                        <span style="font-size: 14px; max-width: 80%; overflow: hidden;">${p}</span>
                         <input type="checkbox" ${selected.has(p)?'checked':''} onclick="toggle('${p}')">
-                        <div class="app-info"><div>${p.split('.').pop()}</div><div class="pkg">${p}</div></div>
                     </div>
                 `).join('');
-            } catch (e) {
-                document.getElementById('list').innerHTML = "初始化失败：请在 FolkPatch 管理器中运行并授予超级用户权限。";
+            } catch(e) {
+                document.getElementById('appList').innerHTML = "加载失败，请检查 FolkPatch 权限。";
             }
         }
 
         function toggle(p) { selected.has(p) ? selected.delete(p) : selected.add(p); }
 
-        async function apply() {
-            const data = Array.from(selected).join('\\n');
-            await window.ksu.exec(`echo -e "${data}" > ${CONF}`);
-            // 模仿 Shamiko 的即时生效，虽然 APatch 重定向是内核级的，但通过清理应用缓存触发重新加载
-            alert("策略已下发。已成功绕过白名单检测机制。");
+        async function save() {
+            const content = Array.from(selected).join('\\n');
+            await window.ksu.exec(`echo -e "${content}" > ${CONF}`);
+            alert("欺骗环境已下发：目标应用现在将视系统为完全未修改状态。");
         }
         init();
     </script>
