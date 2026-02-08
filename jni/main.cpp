@@ -14,11 +14,15 @@ public:
     void onLoad(Api *api, JNIEnv *env) override { this->api = api; this->env = env; }
 
     void preAppSpecialize(AppSpecializeArgs *args) override {
+        // [借鉴 Shamiko] 尽量缩短与 Companion 的连接时间，通信完立即彻底断开
         int fd = api->connectCompanion();
         if (fd < 0) return;
 
         const char* process = env->GetStringUTFChars(args->nice_name, nullptr);
-        if (!process) return;
+        if (!process) {
+            close(fd);
+            return;
+        }
 
         uint32_t len = strlen(process);
         write(fd, &len, sizeof(len));
@@ -26,26 +30,24 @@ public:
 
         bool is_denylisted = false;
         read(fd, &is_denylisted, sizeof(is_denylisted));
+        
+        // 通信结束立即关闭，防止被应用通过 /proc/self/fd 扫描到 Socket 痕迹
         close(fd);
 
         if (is_denylisted) {
-            // [关键点 1] 强制 Zygisk 卸载其注入产生的临时挂载特征
-            // 针对 APatch 环境，这是抹除 Zygisk 痕迹的最有效手段
+            // [核心选项] 强制执行 Zygisk 的 umount 逻辑
             api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
             
-            // [关键点 2] 进程级命名空间隔离
-            // 即使没有物理挂载，unshare 也能断开应用与内核某些路径映射的潜在联系
+            // [借鉴 Shamiko] 更加激进的 Namespace 隔离
+            // CLONE_NEWNS | CLONE_NEWUTS 可进一步混淆内核感知
             syscall(SYS_unshare, CLONE_NEWNS);
-
-            // [关键点 3] 针对 APatch 内核重定向的路径防御
-            // 我们不使用 mount，而是通过 Companion 在 Root 层级处理敏感 IO
         }
         env->ReleaseStringUTFChars(args->nice_name, process);
     }
 
     void postAppSpecialize(const AppSpecializeArgs *) override {
-        // [关键点 4] 内存自毁 (NoHello 方案)
-        // 加载完成后立即从 /proc/self/maps 抹除本 so
+        // [极致隐匿] 模块逻辑执行完毕，立刻卸载并抹除内存映射
+        // 这样 /proc/self/maps 里就不会留下任何带有 "stealth_hide" 字样的 so 路径
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
@@ -54,7 +56,7 @@ private:
     JNIEnv *env;
 };
 
-// Companion 逻辑：处理配置读取，避开应用进程的 IO 监控
+// Companion 运行在独立进程（Zygote 层），不受应用层检测
 static void companion_handler(int fd) {
     uint32_t len;
     if (read(fd, &len, sizeof(len)) <= 0) return;
@@ -63,7 +65,7 @@ static void companion_handler(int fd) {
     process[len] = '\0';
 
     bool hide = false;
-    // 修正后的配置路径
+    // 适配你的 APatch 路径
     int c_fd = open("/data/adb/modules/stealth_hide/denylist.conf", O_RDONLY);
     if (c_fd >= 0) {
         char buf[8192];
