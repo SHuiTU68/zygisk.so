@@ -1,4 +1,4 @@
-name: Build Stealth Module
+name: Build Stealth Pro
 
 on: [push, workflow_dispatch]
 
@@ -6,8 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       
       - name: Setup NDK r29
         uses: nttld/setup-ndk@v1
@@ -16,56 +15,60 @@ jobs:
           ndk-version: r29
           add-to-path: true
 
-      - name: Build with NDK
+      - name: Build arm64-v8a Only
         run: |
           ndk-build NDK_PROJECT_PATH=. \
                     APP_BUILD_SCRIPT=jni/Android.mk \
+                    APP_ABI="arm64-v8a" \
                     -j$(nproc)
 
       - name: Extreme Strip
         run: |
           STRIP=${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
           $STRIP --strip-all --remove-section=.comment --remove-section=.note libs/arm64-v8a/*.so
-          $STRIP --strip-all --remove-section=.comment --remove-section=.note libs/armeabi-v7a/*.so
 
-      - name: Create Module Package
+      - name: Create Stealth Package
         run: |
           mkdir -p out/zygisk out/webroot
+          # 仅打包 arm64-v8a
           cp libs/arm64-v8a/*.so out/zygisk/arm64-v8a.so
-          cp libs/armeabi-v7a/*.so out/zygisk/armeabi-v7a.so
+          cp webroot/index.html out/webroot/
           
-          # 自动生成 module.prop
+          # 集成 service.sh：用于在启动时预清理残留
+          cat <<EOF > out/service.sh
+          #!/system/bin/sh
+          MODDIR=\${0%/*}
+          # 清除可能导致扫盘的残留
+          rm -rf /data/local/tmp/*zygisk*
+          EOF
+
+          # 增强版 module.prop
           cat <<EOF > out/module.prop
           id=stealth_hide
-          name=APatch Stealth Hide
-          version=v1.2.0
-          versionCode=120
+          name=APatch Stealth Pro
+          version=v2.0.0
+          versionCode=200
           author=Gemini
-          description=针对 APatch 环境优化的极致隐藏模块。支持命名空间隔离与防扫盘。
+          description=极致注入隐藏模块。采用内核级 Namespace 隔离、IO 重定向屏蔽。仅支持 arm64。
           zygisk=true
           EOF
           
-          # 自动生成安装脚本
+          # 安装脚本
           cat <<EOF > out/customize.sh
-          ui_print "- 正在安装 Stealth Hide..."
+          ui_print "- 正在移除 32位 兼容层（追求极致隐蔽）"
+          ui_print "- 正在初始化 APatch 隔离视图..."
           mkdir -p /data/adb/modules/stealth_hide
           touch /data/adb/modules/stealth_hide/denylist.conf
           set_perm_recursive \$MODPATH 0 0 0755 0755
+          set_perm \$MODPATH/service.sh 0 0 0755
           EOF
 
-          # 生成默认 WebUI (如仓库无 webroot/index.html)
-          if [ -f webroot/index.html ]; then
-            cp webroot/index.html out/webroot/
-          else
-            echo "<h1>Stealth Manager</h1>" > out/webroot/index.html
-          fi
-
-      - name: Archive Release
+      - name: Archive
         run: |
-          cd out && zip -r ../Stealth_APatch_Final.zip ./*
+          cd out && zip -r ../Stealth_Pro_APatch.zip ./*
 
-      - name: Upload Artifact
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: Stealth_APatch_Final
-          path: Stealth_APatch_Final.zip
+          name: Stealth_Pro_Release
+          path: Stealth_Pro_APatch.zip
