@@ -4,25 +4,22 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sched.h>
+#include <sys/mount.h>
 #include "zygisk.hpp"
 
 using zygisk::Api;
 using zygisk::AppSpecializeArgs;
 
-class StealthModule : public zygisk::ModuleBase {
+class DeceiverModule : public zygisk::ModuleBase {
 public:
     void onLoad(Api *api, JNIEnv *env) override { this->api = api; this->env = env; }
 
     void preAppSpecialize(AppSpecializeArgs *args) override {
-        // [借鉴 Shamiko] 尽量缩短与 Companion 的连接时间，通信完立即彻底断开
         int fd = api->connectCompanion();
         if (fd < 0) return;
 
         const char* process = env->GetStringUTFChars(args->nice_name, nullptr);
-        if (!process) {
-            close(fd);
-            return;
-        }
+        if (!process) { close(fd); return; }
 
         uint32_t len = strlen(process);
         write(fd, &len, sizeof(len));
@@ -30,24 +27,33 @@ public:
 
         bool is_denylisted = false;
         read(fd, &is_denylisted, sizeof(is_denylisted));
-        
-        // 通信结束立即关闭，防止被应用通过 /proc/self/fd 扫描到 Socket 痕迹
         close(fd);
 
         if (is_denylisted) {
-            // [核心选项] 强制执行 Zygisk 的 umount 逻辑
+            // 1. 强制 Zygisk 自动卸载所有注入挂载点
             api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
             
-            // [借鉴 Shamiko] 更加激进的 Namespace 隔离
-            // CLONE_NEWNS | CLONE_NEWUTS 可进一步混淆内核感知
+            // 2. 核心欺骗：隔离命名空间
             syscall(SYS_unshare, CLONE_NEWNS);
+
+            // 3. 针对 /proc/net/unix 的高级欺骗
+            // 游戏常通过扫描此文件发现 zygisk 或 magisk 的 socket 特征
+            // 我们通过挂载一个空的 tmpfs 文件来“诈骗”它，让它以为系统没有活动的进程间通信
+            mount("tmpfs", "/proc/net/unix", "tmpfs", MS_RDONLY, nullptr);
+
+            // 4. 遮蔽 APatch 特有的敏感路径 (针对 /data/dab/ap)
+            // 既然应用层不能有挂载感，我们通过 mount 劫持让这些路径彻底不可见
+            const char* root_evidence[] = {"/data/dab/ap", "/data/adb/modules", "/system/bin/su"};
+            for (const char* path : root_evidence) {
+                mount("tmpfs", path, "tmpfs", MS_RDONLY, nullptr);
+            }
         }
         env->ReleaseStringUTFChars(args->nice_name, process);
     }
 
     void postAppSpecialize(const AppSpecializeArgs *) override {
-        // [极致隐匿] 模块逻辑执行完毕，立刻卸载并抹除内存映射
-        // 这样 /proc/self/maps 里就不会留下任何带有 "stealth_hide" 字样的 so 路径
+        // 5. 内存指纹擦除
+        // 模块执行完欺骗挂载后，立即卸载 .so 映射
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
@@ -56,7 +62,6 @@ private:
     JNIEnv *env;
 };
 
-// Companion 运行在独立进程（Zygote 层），不受应用层检测
 static void companion_handler(int fd) {
     uint32_t len;
     if (read(fd, &len, sizeof(len)) <= 0) return;
@@ -65,7 +70,6 @@ static void companion_handler(int fd) {
     process[len] = '\0';
 
     bool hide = false;
-    // 适配你的 APatch 路径
     int c_fd = open("/data/adb/modules/stealth_hide/denylist.conf", O_RDONLY);
     if (c_fd >= 0) {
         char buf[8192];
@@ -79,5 +83,5 @@ static void companion_handler(int fd) {
     write(fd, &hide, sizeof(hide));
 }
 
-REGISTER_ZYGISK_MODULE(StealthModule)
+REGISTER_ZYGISK_MODULE(DeceiverModule)
 REGISTER_ZYGISK_COMPANION(companion_handler)
