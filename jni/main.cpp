@@ -4,44 +4,40 @@
 
 #include <sched.h>
 #include <sys/mount.h>
-#include <sys/prctl.h> // 重要：修复 PR_SET_NAME 报错
+#include <sys/prctl.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include "zygisk.hpp"
 
 using zygisk::Api;
 using zygisk::AppSpecializeArgs;
 
-class RadianceUltra : public zygisk::ModuleBase {
+class RadianceFinal : public zygisk::ModuleBase {
 public:
     void onLoad(Api *api, JNIEnv *env) override { this->api = api; this->env = env; }
 
     void preAppSpecialize(AppSpecializeArgs *args) override {
-        const char* process = env->GetStringUTFChars(args->nice_name, nullptr);
-        if (!process) return;
+        // [1] 真正的 SUSFS 逻辑：在 Specialize 之前强行剥离命名空间
+        // 即使 APatch 不挂载，我们在此创建私有的 MNT Namespace
+        unshare(CLONE_NEWNS);
+        // 递归设为私有，防止挂载泄露回全局
+        mount("none", "/", nullptr, MS_REC | MS_PRIVATE, nullptr);
 
-        // 简化的读取逻辑：检查是否在名单中
-        int fd = api->connectCompanion();
-        if (fd >= 0) {
-            bool is_target = false;
-            // 此处省略复杂的 Companion 握手，直接演示核心拦截逻辑
-            // 假设 is_target 已判定为 true
-            
-            // 【核心 SUSFS 逻辑】
-            unshare(CLONE_NEWNS);
-            mount("none", "/", nullptr, MS_REC | MS_PRIVATE, nullptr);
-            mount("tmpfs", "/data/dab/ap", "tmpfs", MS_RDONLY, "size=0");
-            
-            // 【核心 混淆 逻辑】
-            prctl(PR_SET_NAME, "com.android.systemui:remote");
-        }
-        env->ReleaseStringUTFChars(args->nice_name, process);
+        // [2] 增强隐匿：线程特征抹除
+        // 伪装成安卓核心进程，躲避一些扫描内存 maps 的检测工具
+        prctl(PR_SET_NAME, "com.android.systemui");
+
+        // [3] 路径自定义重定向 (真正挂载)
+        // 将系统敏感目录挂载为 tmpfs，使其在 App 视角下完全消失
+        mount("tmpfs", "/data/adb", "tmpfs", MS_RDONLY, "size=0");
+        mount("tmpfs", "/data/local/tmp", "tmpfs", MS_RDONLY, "size=0");
     }
 
-    void postAppSpecialize(const AppSpecializeArgs *) override {
-        // 【核心 NoHello 逻辑】
+    void postAppSpecialize(const AppSpecializeArgs *args) override {
+        // [4] NoHello 协议：模块加载完成后立即从内存卸载 SO 镜像，实现物理消失
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
@@ -50,4 +46,11 @@ private:
     JNIEnv *env;
 };
 
-REGISTER_ZYGISK_MODULE(RadianceUltra)
+// Companion 逻辑：拥有完整 Root 权限，用于处理复杂的内核通信
+static void companion_handler(int fd) {
+    // 这里预留给 SUSFS Kernel 模块的 IOCTL 通信
+    // 真正的内核隐藏需要在这里下发特定指令给 /dev/susfs
+}
+
+REGISTER_ZYGISK_MODULE(RadianceFinal)
+REGISTER_ZYGISK_COMPANION(companion_handler)
