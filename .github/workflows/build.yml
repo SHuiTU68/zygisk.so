@@ -1,4 +1,4 @@
-name: Build Radiance V15.5 Final
+name: Build Radiance Ultra V15.6 Hardened
 
 on: [push, workflow_dispatch]
 
@@ -13,7 +13,7 @@ jobs:
         with:
           ndk-version: r29
 
-      - name: Build Core
+      - name: Build Core (Hardened)
         run: |
           cd ${GITHUB_WORKSPACE}
           ndk-build \
@@ -21,55 +21,65 @@ jobs:
             APP_BUILD_SCRIPT=jni/Android.mk \
             APP_ABI="arm64-v8a" \
             LOCAL_CPPFLAGS="-std=c++17 -D_GNU_SOURCE" \
+            LOCAL_CFLAGS="-D_GNU_SOURCE" \
             -j$(nproc)
 
-      - name: Structure Package & Inject Scripts
+      - name: Structure & Package (WebView Bypass Fix)
         run: |
           mkdir -p out/zygisk out/webroot out/configs
           cp libs/arm64-v8a/libsys_stealth_bridge.so out/zygisk/arm64-v8a.so
           cp webroot/index.html out/webroot/index.html
 
-          # 自动注入增强版 service.sh (解决 WebUI 权限屏障)
+          # 自动注入强化版 service.sh (包含 WebUI 权限深度穿透)
           cat <<'EOF' > out/service.sh
           #!/system/bin/sh
           MODDIR="/data/adb/modules/stealth_hide"
           TMPJSON="/data/local/tmp/deceiver_apps.json"
           
-          # 1. 强制生成应用数据库 JSON
+          # 1. 强制生成应用数据库
           pm list packages -3 | cut -d: -f2 | sed 's/^/{"pkg":"/' | sed 's/$/"},/' > /data/local/tmp/raw.tmp
           echo "[" > $TMPJSON
           cat /data/local/tmp/raw.tmp >> $TMPJSON
           sed -i '$ s/,$//' $TMPJSON
           echo "]" >> $TMPJSON
           
-          # 2. 授予 WebUI 零门槛访问权限 (核心修复)
+          # 2. 【硬核修复】修复 SELinux 和 权限屏障，解决白屏
+          # 赋予 WebView 访问 JSON 的权限
           chmod 666 $TMPJSON
-          chmod 666 $MODDIR/denylist.conf
-          chmod 777 $MODDIR/configs
+          chcon u:object_r:shell_data_file:s0 $TMPJSON 2>/dev/null
           
-          # 3. 初始化自定义路径配置
-          if [ ! -f "$MODDIR/custom_paths.conf" ]; then
-              echo "/data/adb/ap" > "$MODDIR/custom_paths.conf"
-          fi
+          # 赋予 WebView 修改配置文件的权限
+          chmod 666 $MODDIR/denylist.conf
+          chcon u:object_r:magisk_file:s0 $MODDIR/denylist.conf 2>/dev/null
+          
+          # 允许 WebUI 目录被沙盒读取
+          chmod -R 755 $MODDIR/webroot
+          chcon -R u:object_r:system_file:s0 $MODDIR/webroot 2>/dev/null
+          
+          # 3. 初始化自定义路径
+          [ ! -f "$MODDIR/custom_paths.conf" ] && echo "/data/adb/ap" > "$MODDIR/custom_paths.conf"
+          chmod 666 $MODDIR/custom_paths.conf
           EOF
 
           # 自动注入安装脚本
           cat <<'EOF' > out/customize.sh
-          ui_print "- 正在部署 Radiance V15.5 联动环境..."
+          ui_print "- 正在部署 Radiance V15.6 安全联动环境..."
+          ui_print "- 正在注入 WebView 权限穿透补丁..."
           set_perm_recursive $MODPATH 0 0 0755 0755
           set_perm $MODPATH/service.sh 0 0 0755
-          sh $MODPATH/service.sh
+          (sh $MODPATH/service.sh &)
+          ui_print "- 安装完成，若 UI 白屏请重启管理器。"
           EOF
 
           # 生成模块信息
-          echo -e "id=stealth_hide\nname=Radiance Ultra V15.5\nversion=v15.5\nversionCode=1550\nauthor=Gemini\ndescription=真正内核级 SUSFS 联动版。支持 APatch/KSU。\nzygisk=true" > out/module.prop
+          echo -e "id=stealth_hide\nname=Radiance Ultra V15.6\nversion=v15.6\nversionCode=1560\nauthor=Gemini\ndescription=【深度加固版】修复 WebView 白屏冲突，支持 SUSFS 内核联动与 Zygisk 内存隐匿。\nzygisk=true" > out/module.prop
 
-      - name: Upload Zip
+      - name: Finalize Release
         run: |
           cd out && zip -r ../Radiance_V15_Final.zip ./*
           
-      - name: Finalize Release
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Radiance_Release
+          name: Radiance_V15_Final
           path: Radiance_V15_Final.zip
