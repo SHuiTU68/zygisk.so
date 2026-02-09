@@ -2,149 +2,89 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Deceiver Ultra Full</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Deceiver Ultra Final</title>
     <style>
-        :root { --accent: #ff3b30; --bg: #000; --card: #1c1c1e; --text: #fff; --sub: #8e8e93; }
-        body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, sans-serif; overflow: hidden; }
-        .page { display: none; height: 100vh; flex-direction: column; }
-        .page.active { display: flex; }
-        .header { padding: 55px 20px 15px; border-bottom: 0.5px solid #333; background: rgba(0,0,0,0.8); backdrop-filter: blur(20px); }
-        .content { flex: 1; overflow-y: auto; padding: 15px 15px 180px; }
-        
-        /* 列表与搜索 */
-        .search-input { width: 100%; background: #1c1c1e; border: 1px solid #333; padding: 12px; border-radius: 12px; color: #fff; margin-bottom: 15px; }
-        .app-card { background: var(--card); border-radius: 16px; padding: 14px; margin-bottom: 10px; display: flex; align-items: center; }
-        .app-info { flex: 1; margin-left: 12px; }
-        
-        /* 设置项 */
-        .set-card { background: var(--card); border-radius: 12px; padding: 15px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
-        .btn-mini { background: #333; color: #fff; border: none; padding: 8px 15px; border-radius: 8px; font-size: 12px; }
-
-        /* 底部动作条 */
-        .action-bar { position: fixed; bottom: 85px; left: 0; right: 0; padding: 0 20px; z-index: 100; }
-        .btn-sync { background: var(--accent); color: #fff; width: 100%; padding: 18px; border-radius: 16px; border: none; font-weight: 800; }
-
-        /* 底部导航 */
-        .tab-bar { position: fixed; bottom: 0; width: 100%; height: 80px; background: #121212; display: flex; justify-content: space-around; padding-top: 10px; border-top: 0.5px solid #333; }
-        .tab { color: var(--sub); text-align: center; flex: 1; cursor: pointer; }
-        .tab.active { color: var(--accent); }
-        .tab-icon { font-size: 20px; display: block; }
-        .tab-label { font-size: 10px; margin-top: 4px; }
+        :root { --accent: #ff3b30; --bg: #050505; --card: #151517; --text: #efefef; }
+        body { margin:0; background:var(--bg); color:var(--text); font-family:sans-serif; }
+        .nav { position:fixed; bottom:0; width:100%; height:70px; background:#111; display:flex; border-top:1px solid #222; }
+        .nav-item { flex:1; text-align:center; padding-top:12px; color:#666; font-size:12px; }
+        .nav-item.active { color:var(--accent); }
+        .page { display:none; padding:60px 20px 100px; height:100vh; overflow-y:auto; box-sizing:border-box; }
+        .page.active { display:block; }
+        .card { background:var(--card); border-radius:12px; padding:15px; margin-bottom:12px; border:1px solid #222; }
+        .btn { background:var(--accent); color:#fff; border:none; padding:15px; border-radius:10px; width:100%; font-weight:bold; }
+        textarea { width:100%; background:#000; color:#0f0; border:1px solid #333; border-radius:8px; padding:10px; font-family:monospace; }
     </style>
 </head>
 <body>
-    <div id="page-list" class="page active">
-        <div class="header"><h1>控制中心</h1></div>
-        <div class="content">
-            <input type="text" class="search-input" id="search" placeholder="搜索已安装的应用..." oninput="render()">
-            <div id="list-container">正在同步数据库...</div>
+    <div id="p1" class="page active">
+        <h2>内核应用控制</h2>
+        <input type="text" id="q" placeholder="搜索包名..." style="width:100%;padding:10px;margin-bottom:15px;border-radius:8px;background:#222;border:none;color:#fff" oninput="render()">
+        <div id="list">加载中...</div>
+    </div>
+
+    <div id="p2" class="page">
+        <h2>SUSFS 自定义路径</h2>
+        <div class="card">
+            <p style="font-size:12px;color:#888">每行一个路径，这些路径将对勾选的应用完全不可见。</p>
+            <textarea id="paths" rows="10"></textarea>
+            <button class="btn" style="margin-top:10px" onclick="savePaths()">保存并注入内核</button>
         </div>
     </div>
 
-    <div id="page-settings" class="page">
-        <div class="header"><h1>系统设置</h1></div>
-        <div class="content">
-            <div class="set-card">
-                <div>数据库缓存<div style="font-size:10px;color:var(--sub)">重新扫描已安装的 App</div></div>
-                <button class="btn-mini" onclick="refreshDB()">立即更新</button>
-            </div>
-            <div class="set-card">
-                <div>自毁策略<div style="font-size:10px;color:var(--sub)">NoHello 模式 (极致隐匿)</div></div>
-                <div style="color:var(--accent)">已开启</div>
-            </div>
-            <div class="set-card">
-                <div>权限修复<div style="font-size:10px;color:var(--sub)">尝试修复 WebUI 读取权限</div></div>
-                <button class="btn-mini" onclick="fixPerms()">修复</button>
-            </div>
+    <div id="p3" class="page">
+        <h2>审计与关于</h2>
+        <div class="card">
+            <b>内核版本:</b> Radiance V15.0<br>
+            <b>协议:</b> Zygisk NoHello + SUSFS<br>
+            <b>状态:</b> <span style="color:#32d74b">内核联动已就绪</span>
         </div>
+        <button class="btn" onclick="run('sh /data/adb/modules/stealth_hide/service.sh').then(()=>location.reload())">强制重载数据库</button>
     </div>
 
-    <div id="page-about" class="page">
-        <div class="header"><h1>关于模块</h1></div>
-        <div class="content" style="text-align:center">
-            <div style="font-size:50px; margin:30px 0">◈</div>
-            <h2 style="margin:0">Deceiver Ultra</h2>
-            <div style="color:var(--sub); margin:10px 0">版本: Radiance V13.8</div>
-            <hr style="border:0.5px solid #222; margin:20px 0">
-            <p style="font-size:13px; color:#aaa; line-height:1.6">
-                本模块专为极致隐匿设计<br>
-                支持 Zygisk NoHello 自毁协议<br>
-                内置 SUSFS 级路径重定向<br>
-                由 Gemini 与 User 协作开发
-            </p>
-        </div>
+    <div class="nav">
+        <div class="nav-item active" onclick="tab(1)">应用</div>
+        <div class="nav-item" onclick="tab(2)">路径</div>
+        <div class="nav-item" onclick="tab(3)">审计</div>
     </div>
-
-    <div class="action-bar" id="sync-bar">
-        <button class="btn-sync" onclick="saveAll()">应用并同步内核配置</button>
-    </div>
-
-    <nav class="tab-bar">
-        <div class="tab active" onclick="showPage('list')"><span class="tab-icon">◈</span><span class="tab-label">应用</span></div>
-        <div class="tab" onclick="showPage('settings')"><span class="tab-icon">⚙</span><span class="tab-label">设置</span></div>
-        <div class="tab" onclick="showPage('about')"><span class="tab-icon">ⓘ</span><span class="tab-label">关于</span></div>
-    </nav>
 
     <script>
-        let apps = [], selected = new Set();
-        async function run(c) { try { return await (window.folk || window.ksu).exec(c); } catch(e) { return {stdout:""}; } }
+        let apps=[], selected=new Set();
+        async function run(c){ try{ return await (window.folk||window.ksu).exec(c); }catch(e){ return {stdout:""}; } }
 
-        function showPage(id) {
-            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.getElementById('page-' + id).classList.add('active');
+        function tab(n){
+            document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));
+            document.getElementById('p'+n).classList.add('active');
             event.currentTarget.classList.add('active');
-            document.getElementById('sync-bar').style.display = (id === 'list' ? 'block' : 'none');
         }
 
-        async function init() {
-            // 穿透策略：先尝试读 local/tmp 里的缓存
-            let res = await run("cat /data/local/tmp/deceiver_apps.json");
-            if (!res.stdout) {
-                // 如果没有，尝试实时获取并通知用户
-                document.getElementById('list-container').innerText = "初次加载或权限受限，正在尝试强制扫描...";
-                await refreshDB();
-                return;
-            }
-            try {
-                apps = JSON.parse(res.stdout).map(a => a.pkg);
-                const saved = (await run("cat /data/adb/modules/stealth_hide/denylist.conf")).stdout.trim().split('\n');
-                saved.forEach(p => p && selected.add(p.trim()));
+        async function init(){
+            const res = await run("cat /data/local/tmp/deceiver_apps.json");
+            if(res.stdout){
+                apps = JSON.parse(res.stdout).map(a=>a.pkg);
+                const conf = await run("cat /data/adb/modules/stealth_hide/denylist.conf");
+                conf.stdout.split('\n').forEach(p=>p.trim()&&selected.add(p.trim()));
+                const pConf = await run("cat /data/adb/modules/stealth_hide/custom_paths.conf");
+                document.getElementById('paths').value = pConf.stdout;
                 render();
-            } catch(e) { document.getElementById('list-container').innerText = "数据格式错误，请点击设置-更新数据库"; }
+            }
         }
 
-        function render() {
-            const key = document.getElementById('search').value.toLowerCase();
-            const filtered = apps.filter(p => p.toLowerCase().includes(key));
-            document.getElementById('list-container').innerHTML = filtered.map(p => `
-                <div class="app-card">
-                    <div class="app-info">
-                        <div style="font-size:14px;font-weight:bold">${p.split('.').pop()}</div>
-                        <div style="font-size:10px;color:var(--sub)">${p}</div>
-                    </div>
-                    <input type="checkbox" style="width:22px;height:22px" ${selected.has(p)?'checked':''} onclick="toggle('${p}')">
+        function render(){
+            const key = document.getElementById('q').value.toLowerCase();
+            document.getElementById('list').innerHTML = apps.filter(p=>p.includes(key)).map(p=>`
+                <div class="card" style="display:flex;align-items:center">
+                    <div style="flex:1;font-size:14px">${p}</div>
+                    <input type="checkbox" ${selected.has(p)?'checked':''} onclick="toggle('${p}')">
                 </div>
             `).join('');
         }
 
-        function toggle(p) { selected.has(p) ? selected.delete(p) : selected.add(p); }
-
-        async function saveAll() {
-            await run(`echo -e "${Array.from(selected).join('\\n')}" > /data/adb/modules/stealth_hide/denylist.conf`);
-            alert("同步完成！配置已生效。");
-        }
-
-        async function refreshDB() {
-            await run("sh /data/adb/modules/stealth_hide/service.sh");
-            setTimeout(init, 1000);
-        }
-
-        async function fixPerms() {
-            await run("chmod -R 777 /data/adb/modules/stealth_hide");
-            alert("修复完成");
-        }
+        function toggle(p){ selected.has(p)?selected.delete(p):selected.add(p); saveList(); }
+        async function saveList(){ await run(`echo -e "${Array.from(selected).join('\\n')}" > /data/adb/modules/stealth_hide/denylist.conf`); }
+        async function savePaths(){ await run(`echo "${document.getElementById('paths').value}" > /data/adb/modules/stealth_hide/custom_paths.conf`); alert("路径配置已同步"); }
 
         window.onload = init;
     </script>
