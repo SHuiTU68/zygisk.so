@@ -1,67 +1,78 @@
-name: PLC110_Ultra_Kernel_Build
+name: PLC110_Ultimate_Build
 on:
-  workflow_dispatch: # 支持手动点击运行
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 清理环境并安装工具
-        run: |
-          sudo apt update
-          sudo apt install repo curl git python3 patch zip -y
+      - name: 1. 环境准备
+        run: sudo apt update && sudo apt install repo curl git python3 patch zip -y
 
-      - name: 2. 初始化 Repo 清单 (官方底座)
+      - name: 2. 同步官方底座 (使用 Repo)
         run: |
-          mkdir build && cd build
-          # 使用你找到的 WildKernels 官方清单
+          mkdir -p android/kernel && cd android/kernel
           repo init -u https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
-          # 云端下载速度极快，无需担心 Connection Refused
           repo sync -c -j$(nproc) --no-tags --no-clone-bundle
 
       - name: 3. 注入 KSUN-Next (混合钩子)
+        # 强制指定在源码所在目录运行，修复 No such file 报错
         run: |
-          cd build/common
+          cd android/kernel/common
           rm -rf drivers/kernelsu
-          # 拉取最新的混合钩子驱动
           git clone -b next --depth=1 https://github.com/rifsxd/KernelSU-Next drivers/kernelsu
+          echo "✅ 混合钩子驱动已注入"
 
-      - name: 4. 注入风驰 (Fengchi) 优化补丁
+      - name: 4. 注入 ADIOS 调度器
         run: |
-          cd build/common
-          # 从 cctv18 仓库获取性能补丁
+          cd android/kernel/common
+          git clone --depth=1 https://github.com/firelzrd/adios kernel/sched/adios
+          echo 'obj-y += adios/' >> kernel/sched/Makefile
+          # 动态挂载 Kconfig
+          sed -i '/endmenu/i source "kernel/sched/adios/Kconfig"' kernel/sched/Kconfig
+          echo "✅ ADIOS 调度器已挂载"
+
+      - name: 5. 注入 Baseband-guard (BBG)
+        run: |
+          cd android/kernel/common
+          git clone --depth=1 https://github.com/vc-teahouse/Baseband-guard drivers/bbg
+          echo 'obj-y += bbg/' >> drivers/Makefile
+          echo 'source "drivers/bbg/Kconfig"' >> drivers/Kconfig
+          echo "✅ BBG 基带守护已挂载"
+
+      - name: 6. 应用性能补丁与配置宏
+        run: |
+          cd android/kernel/common
+          # 下载补丁
           curl -L https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch -o fengchi.patch
-          # 云端路径标准，不会报 "File to patch" 错误
-          patch -p1 < fengchi.patch || echo "部分补丁已跳过"
-
-      - name: 5. 暴力写入内核宏配置
-        run: |
-          cd build/common
-          # 针对天玑 9400 (PLC110) 强制开启核心参数
+          patch -p1 < fengchi.patch || echo "⚠️ 部分补丁冲突，已跳过"
+          
+          # 开启所有核心优化宏
           DEFCONFIG="arch/arm64/configs/oplus_mt6991_defconfig"
-          echo "CONFIG_KSU_NEXT_HYBRID_HOOK=y" >> $DEFCONFIG
-          echo "CONFIG_KSU_NEXT_KPROBE_REPLACE=y" >> $DEFCONFIG
-          echo "CONFIG_ADIOS_SCHED=y" >> $DEFCONFIG
-          echo "CONFIG_FENGCHI_OPTIMIZE=y" >> $DEFCONFIG
+          {
+            echo "CONFIG_KSU_NEXT_HYBRID_HOOK=y"
+            echo "CONFIG_KSU_NEXT_KPROBE_REPLACE=y"
+            echo "CONFIG_ADIOS_SCHED=y"
+            echo "CONFIG_BASEBAND_GUARD=y"
+            echo "CONFIG_FENGCHI_OPTIMIZE=y"
+          } >> $DEFCONFIG
 
-      - name: 6. 执行正式编译 (LLVM)
+      - name: 7. 执行编译 (天玑 9400)
         run: |
-          cd build/common
-          # 使用 Ubuntu 最新自带的 LLVM 工具链
+          cd android/kernel/common
           make O=out ARCH=arm64 oplus_mt6991_defconfig
           make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j$(nproc)
 
-      - name: 7. 打包 AnyKernel3 并上传
+      - name: 8. 打包 AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3
-          cp build/common/out/arch/arm64/boot/Image AnyKernel3/
+          cp android/kernel/common/out/arch/arm64/boot/Image AnyKernel3/
           cd AnyKernel3
-          # 禁用设备检查确保能顺利刷入 PLC110
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../PLC110_Fengchi_Hybrid.zip *
+          zip -r9 ../PLC110_Ultimate_Kernel.zip *
 
-      - name: 8. 发布编译产物
+      - name: 9. 发布产物
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-Kernel-Zip
-          path: PLC110_Fengchi_Hybrid.zip
+          name: PLC110-Extreme-Kernel
+          path: PLC110_Ultimate_Kernel.zip
