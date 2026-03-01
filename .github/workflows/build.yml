@@ -1,4 +1,4 @@
-name: Build-PLC110-Final-Stable
+name: Build-PLC110-Ultra-Stable
 on:
   workflow_dispatch:
 
@@ -19,18 +19,20 @@ jobs:
           sudo apt-get install -y bc build-essential flex bison git libelf-dev libssl-dev lz4 liblz4-tool python3-pip zip tar curl sed uuid-dev wget pahole
           echo "Environment Ready."
 
-      - name: Sync Source & Pershoot KSUN
+      - name: Sync Source & KSUN (Pershoot)
         run: |
-          # 自动匹配分支名：优先尝试 mtk6991，失败则尝试 mt6991
-          git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991 -b oneplus/mtk6991 kernel_src || \
-          git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991 -b oneplus/mt6991 kernel_src || \
-          git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991 kernel_src
+          # 尝试多种可能的分支名，彻底解决 exit code 128
+          REPO="https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991"
+          git clone --depth=1 $REPO -b oneplus/mtk6991 kernel_src || \
+          git clone --depth=1 $REPO -b oneplus/mt6991 kernel_src || \
+          git clone --depth=1 $REPO -b oneplus/mtk9400 kernel_src || \
+          git clone --depth=1 $REPO kernel_src
           
-          # 拉取 Clang r522830
+          # 下载 Clang r522830
           mkdir clang
           curl -LSs https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522830.tar.gz | tar -xzC clang
           
-          # 调用 pershoot 仓库实现 Hybrid Hook
+          # 核心：注入 Pershoot 分支实现 Hybrid Hook
           cd kernel_src
           curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/main/kernel/setup.sh" | bash -s main
 
@@ -41,33 +43,32 @@ jobs:
           curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
           patch -p1 < fengchi.patch || echo "Patch skip"
 
-          # 2. 移除冲突并强制 O2 性能优化
-          find . -name "*susfs*" -exec rm -rf {} +
+          # 2. 强制 O2 性能优化
           sed -i 's/CONFIG_CC_OPTIMIZE_FOR_SIZE=y/CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y/g' arch/arm64/configs/gki_defconfig
           sed -i 's/-Os/-O2/g' Makefile
 
-          # 3. 采用第一个方案：禁用 Kprobes 以实现 Hybrid Hook
+          # 3. 禁用 Kprobes 触发 Hybrid 逻辑
           echo "CONFIG_KPROBES=n" >> arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPROBE_EVENTS=n" >> arch/arm64/configs/gki_defconfig
 
-      - name: Build Kernel
+      - name: Start Build
         run: |
           cd kernel_src
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 gki_defconfig
           make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 -j$(nproc)
 
-      - name: Package AnyKernel3 (Sync Screenshot Logic)
+      - name: Package AK3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3 AK3
           cd AK3
           rm -rf .git README.md
           
-          # 写入完全对齐截图的脚本
+          # 写入完全对齐截图的 anykernel.sh 刷写逻辑
           cat <<EOF > anykernel.sh
 ### AnyKernel3 Ramdisk Mod Script
 properties() { '
-kernel.string=KSUN for PLC110-O2-Hybrid
+kernel.string=KSUN-PLC110-O2-Hybrid
 do.devicecheck=0
 do.modules=0
 do.systemless=0
@@ -84,7 +85,7 @@ no_magisk_check=1;
 
 . tools/ak3-core.sh;
 
-# 内核版本检测：支持 5.1/6.1/6.6
+# 内核版本 5.1/6.1/6.6 识别逻辑
 kernel_version=\$(cat /proc/version | awk -F '-' '{print \$1}' | awk '{print \$3}')
 case \$kernel_version in
   5.1*) ksu_supported=true ;;
@@ -105,7 +106,7 @@ else
 fi
 EOF
 
-          # 复制未压缩的原始 Image 镜像
+          # 复制原始 Image (36.30M 左右)
           cp ../kernel_src/out/arch/arm64/boot/Image ./Image
           zip -r ../KSUN-PLC110-O2-Stable.zip *
 
