@@ -1,93 +1,134 @@
-name: Build OP-MTK6991-Hybrid-O2
+name: Build-PLC110-Pershoot-Ultimate
 on:
-  workflow_dispatch: # 手动触发编译
+  workflow_dispatch:
 
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
-        # 定义两种方案：方案一(禁用Kprobes), 方案二(修改源码)
+        # 方案一：通过禁用 Kprobes 触发 Hybrid | 方案二：源码级硬改强制 Hybrid
         hook_type: [disable_kprobes, modify_source]
     runs-on: ubuntu-latest
     steps:
-      # 1. 环境准备：安装编译内核所需的必要库和工具
-      - name: Install Build Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison bzip2 git libelf-dev libssl-dev lz4 liblz4-tool libncurses-dev python3-pip zip tar curl sed uuid-dev wget pahole
-          # 升级 cmake 以确保兼容性
-          sudo pip3 install cmake
-          echo "Environment Ready."
-
-      # 2. 释放磁盘空间 (MTK源码+编译产物非常大)
       - name: Maximize Build Space
         uses: easimon/maximize-build-space@master
         with:
           root-reserve-mb: 16384
           remove-dotnet: 'true'
           remove-android: 'true'
-          remove-haskell: 'true'
 
-      # 3. 拉取源码与工具链 (仿照 cctv18 逻辑)
-      - name: Sync Source and Toolchain
+      - name: Install Build Dependencies
         run: |
-          # 拉取 OnePlusOSS MTK6991 源码
-          git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_5.10_oneplus_mt6983 -b oneplus/mtk6991 kernel_src
+          sudo apt-get update
+          sudo apt-get install -y bc build-essential flex bison git libelf-dev libssl-dev lz4 liblz4-tool python3-pip zip tar curl sed uuid-dev wget pahole
+          echo "Environment Ready."
+
+      - name: Sync Source & Pershoot KSUN
+        run: |
+          # 1. 拉取一加 Ace 5 至尊版 (PLC110) 6.6 内核源码
+          git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991 -b oneplus/mtk6991 kernel_src
           
-          # 拉取最新 AOSP Clang (r522830 或更高，支持 O2 深度优化)
+          # 2. 拉取 AOSP Clang r522830 (支持 O2 性能优化)
           mkdir clang
-          cd clang
-          curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522830.tar.gz
-          tar -xf *.tar.gz
-          cd ..
+          curl -LSs https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522830.tar.gz | tar -xzC clang
           
-          # 集成 KernelSU Next (KSUN)
+          # 3. 核心步骤：调用 pershoot 分支实现 Hybrid Hook
           cd kernel_src
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/main/kernel/setup.sh" | bash -s main
+          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/main/kernel/setup.sh" | bash -s main
 
-      # 4. 极致优化与补丁注入 (LZ4 v1.10.0 + O2 + 风驰 + 混合钩子)
-      - name: Advanced Optimization & Patching
+      - name: Advanced Optimization & Hybrid Logic
         run: |
           cd kernel_src
           
-          # A. 部署 LZ4 1.10.0
+          # 1. 部署 LZ4 1.10.0 并清理 SUSFS
           git clone https://github.com/lz4/lz4.git -b v1.10.0 lz4_tool
           cd lz4_tool && make -j$(nproc) && sudo make install && cd ..
-          
-          # B. 注入风驰游戏补丁
-          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          patch -p1 < fengchi.patch || echo "Patch skip some lines"
+          find . -name "*susfs*" -exec rm -rf {} +
 
-          # C. 强制 O2 优化
+          # 2. 注入风驰游戏补丁 (性能调度优化)
+          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
+          patch -p1 < fengchi.patch || echo "Patch applied with warnings"
+
+          # 3. 强制 O2 优化 (提升内核运行速度)
           sed -i 's/CONFIG_CC_OPTIMIZE_FOR_SIZE=y/CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y/g' arch/arm64/configs/gki_defconfig
           sed -i 's/-Os/-O2/g' Makefile
 
-          # D. 混合钩子实现 (按照截图逻辑) & 移除 SUSFS
-          find . -name "*susfs*" -exec rm -rf {} +
+          # 4. 实现混合钩子切换逻辑
           if [ "${{ matrix.hook_type }}" == "disable_kprobes" ]; then
-             echo "CONFIG_KPROBES=n" >> arch/arm64/configs/gki_defconfig
+            # 方案一：在编译阶段关闭内核 Kprobes
+            echo "CONFIG_KPROBES=n" >> arch/arm64/configs/gki_defconfig
+            echo "CONFIG_KPROBE_EVENTS=n" >> arch/arm64/configs/gki_defconfig
           else
-             # 方案二：源码级硬改
-             sed -i '/CONFIG_KPROBES/d' kernel/Kbuild
-             sed -i '/IS_ENABLED(CONFIG_KPROBES)/d' kernel/supercalls.c
+            # 方案二：源码硬改，删除 KPROBES 判断语句 (会导致 avc 欺骗失效)
+            sed -i '/CONFIG_KPROBES/d' kernel/Kbuild
+            sed -i '/IS_ENABLED(CONFIG_KPROBES)/d' kernel/supercalls.c
           fi
 
-      # 5. 开始构建 (仿照 cctv18 的编译指令)
-      - name: Start Build
+      - name: Build Kernel (Image Only)
         run: |
           cd kernel_src
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          # 这里填入具体的编译命令，例如：
-          # make O=out ARCH=arm64 gki_defconfig
-          # make O=out ARCH=arm64 CC=clang LLVM=1 -j$(nproc)
-          
-      # 6. 打包 AnyKernel3 并上传
-      - name: Package AK3
+          make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 gki_defconfig
+          make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 -j$(nproc)
+
+      - name: Package AnyKernel3 (Sync with Screenshot Logic)
         run: |
-          # 判定名称
-          if [ "${{ matrix.hook_type }}" == "disable_kprobes" ]; then
-            NAME="OP-MT6991-O2-NoKprobe"
-          else
-            NAME="OP-MT6991-O2-Hybrid-SourceMod"
-          fi
-          # 执行打包逻辑并上传 Artifact
+          git clone https://github.com/osm0sis/AnyKernel3 AK3
+          cd AK3
+          rm -rf .git README.md
+          
+          # 写入同步截图的刷写逻辑
+          cat <<EOF > anykernel.sh
+### AnyKernel3 Ramdisk Mod Script
+properties() { '
+kernel.string=KSUN for PLC110-O2-Hybrid by Gemini
+do.devicecheck=0
+do.modules=0
+do.systemless=0
+do.cleanup=1
+device.name1=PLC110
+supported.versions=14, 15
+'; }
+
+block=boot;
+is_slot_device=auto;
+ramdisk_compression=auto;
+patch_vbmeta_flag=auto;
+no_magisk_check=1;
+
+. tools/ak3-core.sh;
+
+# 核心：内核版本兼容性检测
+kernel_version=\$(cat /proc/version | awk -F '-' '{print \$1}' | awk '{print \$3}')
+case \$kernel_version in
+  5.1*) ksu_supported=true ;;
+  6.1*) ksu_supported=true ;;
+  6.6*) ksu_supported=true ;;
+  *) ksu_supported=false ;;
+esac
+
+ui_print " " "-> Wild Kernels Supported: \$ksu_supported"
+\$ksu_supported || abort " -> Non-GKI device, abort."
+
+split_boot;
+if [ -f "split_img/ramdisk.cpio" ]; then
+  unpack_ramdisk;
+  write_boot;
+else
+  flash_boot;
+fi
+EOF
+
+          # 提取未压缩的原始 Image
+          cp ../kernel_src/out/arch/arm64/boot/Image ./Image
+          
+          ZIP_NAME="KSUN-PLC110-O2-${{ matrix.hook_type }}.zip"
+          zip -r ../\$ZIP_NAME *
+          echo "ZIP_NAME=\$ZIP_NAME" >> \$GITHUB_ENV
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}
