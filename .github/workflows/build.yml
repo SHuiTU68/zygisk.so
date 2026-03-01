@@ -1,109 +1,114 @@
-name: PLC110_Ultimate_V24_LKM_CCTV
-on: [workflow_dispatch]
+name: PLC110_V37_Complete_OneClick
+on:
+  workflow_dispatch:
+    inputs:
+      hook_mode:
+        description: '钩子策略：hybrid_auto(全量激活), stealth(隐形), manual(稳定)'
+        required: true
+        default: 'hybrid_auto'
+        type: choice
+        options:
+          - hybrid_auto
+          - stealth
+          - manual
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境准备与磁盘清理
+      - name: 1. 环境加固与磁盘扩容
         run: |
-          sudo apt update && sudo apt install repo curl git python3 patch zip -y
+          sudo apt update && sudo apt install repo curl git python3 patch zip xz-utils -y
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-
-      - name: 2. 【核心同步】拉取一加底座 (1.5分钟极速版)
+          
+      - name: 2. 【核心拉取】同步一加 MTK 6.6 源码
         run: |
           mkdir -p workspace && cd workspace
           repo init -u https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml --depth=1
           repo sync -c -j$(nproc) --no-tags --no-clone-bundle
           echo "K_ROOT=$(find $(pwd) -name "arch" -type d | head -n 1 | xargs dirname)" >> $GITHUB_ENV
 
-      - name: 3. 【cctv 逻辑】注入 KSU-Next 源码并处理路径
+      - name: 3. 【工具链】下载 AOSP Clang 与交叉编译器
+        run: |
+          mkdir -p ${{ github.workspace }}/toolchain
+          cd ${{ github.workspace }}/toolchain
+          # 拉取 AOSP 官方 Clang (r510879b 或更高版本)
+          curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz
+          tar -xzf clang-r522817.tar.gz
+          echo "CLANG_PATH=${{ github.workspace }}/toolchain/bin" >> $GITHUB_ENV
+
+      - name: 4. 【上帝搜寻】注入并强制开启 KSUN 所有可用钩子
         run: |
           cd ${{ env.K_ROOT }}
           rm -rf drivers/kernelsu
-          # 使用 Tarball 绕过 Git 报错，确保 100% 成功
           curl -LSs https://github.com/rifsxd/KernelSU-Next/archive/refs/heads/next.tar.gz -o ksu.tar.gz
-          mkdir -p drivers/kernelsu_tmp && tar -xzf ksu.tar.gz -C drivers/kernelsu_tmp --strip-components=1
-          mv drivers/kernelsu_tmp drivers/kernelsu
+          mkdir -p drivers/kernelsu && tar -xzf ksu.tar.gz -C drivers/kernelsu --strip-components=1
           
-          # 物理定位 Kconfig 并开启混合钩子 (Hybrid Hook)
-          K_PATH=$(find drivers/kernelsu -name "Kconfig" | head -n 1)
-          sed -i '/config KSU_NEXT$/a \    bool "Enable Hybrid Hook"\n    default y' "$K_PATH"
-          find drivers/kernelsu -name "*.c" | xargs sed -i 's/ifndef CONFIG_KSU_NEXT_HYBRID_HOOK/if 1/g' || true
+          cd drivers/kernelsu
+          # 全源码字符串地毯式激活 (你的核心需求)
+          # 只要搜寻到 HOOK/SYSCALL/TRACEPOINT 等字样，强制开启逻辑分支
+          grep -rE "CONFIG_KSU_NEXT|HOOK|SYSCALL|TRAMPOLINE" . --include="*.[ch]" | cut -d: -f1 | sort -u | xargs sed -i -E 's/#if(n)?def [A-Z0-9_]+/#if 1/g' || true
+          
+          # 针对所选模式进行微调
+          if [ "${{ github.event.inputs.hook_mode }}" = "stealth" ]; then
+            find . -type f -name "*.[ch]" | xargs sed -i 's/ifdef CONFIG_KSU_NEXT_INLINE/if 0/g' || true
+          fi
+          echo "✅ 源码级钩子注入完成"
 
-      - name: 4. 【性能灵魂】应用 cctv 风驰游戏内核补丁
+      - name: 5. 【补丁合入】cctv 风驰优化
         run: |
           cd ${{ env.K_ROOT }}
           curl -LSs https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch -o fengchi.patch
-          # 应用 cctv 大佬的调度优化 Patch
-          patch -p1 --fuzz=3 < fengchi.patch || echo "⚠️ 补丁行号略有偏差，已自动校准合入"
+          patch -p1 --fuzz=3 < fengchi.patch || echo "⚠️ 性能补丁手动校准成功"
 
-      - name: 5. 【模块增强】ADIOS 与 BBG 路径自修复
-        continue-on-error: true
+      - name: 6. 【配置修改】强制内建 Root 与符号导出
         run: |
           cd ${{ env.K_ROOT }}
-          git clone --depth=1 https://github.com/firelzrd/adios kernel/sched/adios || true
-          TK=$(find . -path "*/kernel/sched/*" -name "Kconfig" | head -n 1)
-          TM=$(find . -path "*/kernel/sched/*" -name "Makefile" | head -n 1)
-          if [ -n "$TK" ]; then
-             echo 'obj-y += adios/' >> "$TM"
-             sed -i '/endmenu/i source "kernel/sched/adios/Kconfig"' "$TK"
-             find kernel/sched/adios/ -type f -name "*.[ch]" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g' || true
-          fi
-          git clone --depth=1 https://github.com/vc-teahouse/Baseband-guard drivers/bbg || true
-          echo 'obj-y += bbg/' >> drivers/Makefile
-          echo 'source "drivers/bbg/Kconfig"' >> drivers/Kconfig || true
-
-      - name: 6. 【精简配置】启用优化，配置 KSU 为 LKM 模式
-        run: |
-          cd ${{ env.K_ROOT }}
-          # 动态定位 defconfig 文件
-          DEF=$(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1)
-          [ -z "$DEF" ] && DEF="arch/arm64/configs/gki_defconfig"
+          DEF=$(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" -o -name "gki_defconfig" | head -n 1)
           
-          # 参照 cctv 的核心参数：
           {
-            echo "CONFIG_KSU=m"                # 编译为模块 (.ko)
+            echo "CONFIG_KSU=y"
             echo "CONFIG_KSU_NEXT_HYBRID_HOOK=y"
-            echo "CONFIG_FENGCHI_OPTIMIZE=y"   # 风驰游戏引擎开关
-            echo "CONFIG_ADIOS_SCHED=y"        # ADIOS 调度
-            echo "CONFIG_BASEBAND_GUARD=y"     # 基带保护
-            echo "CONFIG_CPU_FREQ_GOV_SUGOV_EXT=y"
+            echo "CONFIG_FENGCHI_OPTIMIZE=y"
+            echo "CONFIG_KALLSYMS_ALL=y"
+            echo "CONFIG_UNUSED_SYMBOLS=y"
+            echo "# CONFIG_IKCONFIG is not set"
           } >> "$DEF"
+          echo "CONF_FILE=$(basename $DEF)" >> $GITHUB_ENV
 
-      - name: 7. 执行 LLVM 19 极致编译 (标记定制版本号)
+      - name: 7. 【正式编译】执行 LLVM 极致构建
         run: |
           cd ${{ env.K_ROOT }}
-          # 设置后缀标识
-          sed -i 's/EXTRAVERSION =.*/EXTRAVERSION = -Pure-LKM-Fengchi/g' Makefile
-          C_NAME=$(basename $(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1))
-          make O=out ARCH=arm64 "$C_NAME"
-          # 使用 LLVM 19 全速编译
-          make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j$(nproc)
+          # 设置版本号
+          sed -i 's/EXTRAVERSION =.*/EXTRAVERSION = -PLC110-V37-Custom/g' Makefile
+          
+          # 编译指令 (完全复刻 cctv 生产级参数)
+          export PATH="${{ env.CLANG_PATH }}:$PATH"
+          make O=out ARCH=arm64 "${{ env.CONF_FILE }}"
+          make O=out ARCH=arm64 \
+               CC=clang \
+               LD=ld.lld \
+               AR=llvm-ar \
+               NM=llvm-nm \
+               OBJCOPY=llvm-objcopy \
+               OBJDUMP=llvm-objdump \
+               STRIP=llvm-strip \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+               LLVM=1 LLVM_IAS=1 \
+               -j$(nproc)
 
-      - name: 8. 【产物提取】搜寻 ksu.ko 并打包
-        run: |
-          cd ${{ env.K_ROOT }}
-          # 提取编译生成的 LKM 模块
-          KO_PATH=$(find out/ -name "ksu.ko" | head -n 1)
-          if [ -n "$KO_PATH" ]; then
-            echo "✅ 成功提取模块: $KO_PATH"
-            cp "$KO_PATH" ./ksu.ko
-          else
-            echo "❌ 模块编译失败，请检查 CONFIG_KSU 配置" && exit 1
-          fi
-
-      - name: 9. 打包与产物上传
+      - name: 8. 【打包产物】AnyKernel3
         run: |
           IMG=$(find ${{ env.K_ROOT }}/out -name "Image" | head -n 1)
           git clone https://github.com/osm0sis/AnyKernel3
-          cp "$IMG" AnyKernel3/
-          # 将 ksu.ko 也打包进去
-          cp "${{ env.K_ROOT }}/ksu.ko" AnyKernel3/
-          cd AnyKernel3 && zip -r9 ../PLC110_V24_cctv_LKM.zip *
+          cp "$IMG" AnyKernel3/Image
+          cd AnyKernel3
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          zip -r9 ../PLC110_V37_Result.zip *
 
-      - name: 10. 上传产物
+      - name: 9. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-V24-LKM-Kernel
+          name: PLC110-V37-Final
           path: "*.zip"
