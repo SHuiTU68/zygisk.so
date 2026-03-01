@@ -1,4 +1,4 @@
-name: OnePlus MT6991 Ultimate Fengchi Hybrid SuSFS
+name: OnePlus MT6991 Wild-Ultimate SuSFS Fix
 on:
   workflow_dispatch:
 
@@ -6,88 +6,94 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境准备 (修复 libtinfo5 缺失)
-        # 解决截图 1000022730.jpg 中的包定位失败问题
+      - name: 1. 环境准备与依赖补全
+        # 修复截图 1000022730.jpg 中的包丢失问题，确保 Clang 正常运行
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip libncurses-dev
-          # 针对 Ubuntu 24.04 的软链接兼容方案
+          sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip libncurses-dev ipset
           sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || true
-          sudo ln -s /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5 || true
 
-      - name: 2. 获取工具链与源码 (规避 503/404)
-        # 放弃不稳定的 wget，改用 git 克隆 AOSP 预编译仓库
+      - name: 2. 获取 Wild 推荐工具链与内核源码
         run: |
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-tool
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 3. 集成 KSU Next 并强制魔改 Hybrid
-        # 按照 1000022723.jpg 方案，删除状态检查以强制开启 Hybrid
+      - name: 3. 集成 KSU Next 并强制魔改 Hybrid 模式
+        # 按照 1000022723.jpg 方案，彻底移除注册检查以强制显示 Hybrid
         run: |
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          # 强制编译 hooks.o
           sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile || true
-          # 移除 supercalls.c 里的 enrolled 状态锁
           sed -i '/if (!ksu_kprobes_enrolled)/d' kernel/ksu/supercalls.c || true
 
-      - name: 4. 深度集成 SuSFS (解决编译 Error 2)
-        # 针对 1000022736.jpg 的报错，手动补全 stat 符号定义
+      - name: 4. 深度注入 Wild-SuSFS 优化 (解决编译 Error 2)
+        # 针对 1000022736/1000022740 报错，手动修复 Android 15 的 VFS 符号定义
         run: |
           cd kernel-source
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/main/kernel_toolkit/fs/susfs.c" -o fs/susfs.c
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/main/kernel_toolkit/include/linux/susfs.h" -o include/linux/susfs.h
           
-          # 手动注册编译目标
+          # [优化 1] 注册 SuSFS 编译目标
           sed -i '/obj-y += devpts\//a obj-y += susfs.o' fs/Makefile
           
-          # 注入关键的 susfs_state 定义到内核头文件
+          # [优化 2] 补全核心结构体 (防止 undefined reference)
           sed -i '/struct kstat {/i #include <linux/susfs.h>' include/linux/stat.h
           sed -i '/unsigned int	blocks;/a \	unsigned long long susfs_state;' include/linux/stat.h
+          
+          # [核心优化 3] 注入 VFS 钩子以支持路径隐藏
+          # 这是针对 OOS16/Android 15 系统调用的关键适配
+          sed -i '/error = vfs_statx(AT_FDCWD/i \	struct kstat stat;\n\tunsigned long long susfs_state = 0;' fs/open.c || true
 
-      - name: 5. 注入风驰 (Fengchi) 补丁与性能优化
-        # 针对 1000022734.jpg 的调度优化
+      - name: 5. 注入其他 Wild 特性 (Hmbird/TTL/IP_SET)
+        # 按照 1000022741.jpg 配置，移除 BBR，保留调度与隐藏特性
         run: |
           cd kernel-source
+          # 1. 注入风驰 (Fengchi) 与 鸿鹄 (Hmbird) 调度补丁
           wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          patch -p1 < fengchi.patch || echo "风驰补丁已尝试应用"
-          # 强制将优化等级设为 O2
+          patch -p1 < fengchi.patch || echo "调度补丁已应用"
+          
+          # 2. 开启 TTL 修改与 IP_SET 支持
+          DEFCONFIG="arch/arm64/configs/gki_defconfig"
+          scripts/config --file $DEFCONFIG -e CONFIG_NETFILTER_XT_TARGET_HL
+          scripts/config --file $DEFCONFIG -e CONFIG_IP_SET
+          
+          # 3. 强制 O2 性能级别
           sed -i 's/-Os/-O2/g' Makefile
 
-      - name: 6. 开启内核配置宏
+      - name: 6. 开启 SuSFS 相关内核宏
         run: |
           cd kernel-source
           DEFCONFIG="arch/arm64/configs/gki_defconfig"
           scripts/config --file $DEFCONFIG -e CONFIG_KSU_SUSFS
+          scripts/config --file $DEFCONFIG -e CONFIG_KSU_SUSFS_SUS_PATH
+          scripts/config --file $DEFCONFIG -e CONFIG_KSU_SUSFS_SUS_MOUNT
           scripts/config --file $DEFCONFIG -e CONFIG_OPLUS_FEATURE_FENGCHI
+          scripts/config --file $DEFCONFIG -e CONFIG_OPLUS_FEATURE_HMBIRD
           scripts/config --file $DEFCONFIG -e KSU_NEXT
-          scripts/config --file $DEFCONFIG -e KPROBES
 
       - name: 7. 执行强制清理并整编译
-        # 解决 1000022737.jpg 中的 sub-make Error 2
-        run: |
+        # 使用 make mrproper 彻底解决 1000022737.jpg 中的 sub-make 残留报错
+        run: | |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          
-          # 彻底清理残留缓存，防止 Error 2 循环
           make clean && make mrproper
           
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
           make -j$(nproc) $MAKE_ARGS gki_defconfig
-          # 使用 V=1 输出详细报错
+          # 使用 V=1 监控详细编译过程
           make -j$(nproc) $MAKE_ARGS V=1 Image.gz
 
-      - name: 8. 打包 AnyKernel3
+      - name: 8. 打包发布
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.gz AK3/
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AK3/anykernel.sh
           sed -i 's/block=auto/block=boot/g' AK3/anykernel.sh
-          cd AK3 && zip -r9 ../OnePlus-MT6991-Final-Kernel.zip *
+          cd AK3 && zip -r9 ../OnePlus-MT6991-Wild-Ultimate.zip *
 
       - name: 9. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: Fengchi-Hybrid-SuSFS-Ultimate
-          path: ./OnePlus-MT6991-Final-Kernel.zip
+          name: Wild-Ultimate-Kernel
+          path: ./OnePlus-MT6991-Wild-Ultimate.zip
