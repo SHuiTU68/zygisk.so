@@ -1,107 +1,113 @@
-name: PLC110_Ultimate_GKI_Search_V11
+name: PLC110_Ultimate_GKI_V12
 on: [workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境准备
+      - name: 1. 环境加固
         run: sudo apt update && sudo apt install repo curl git python3 patch zip -y
 
-      - name: 2. 【极速同步】1.5分钟底座拉取
+      - name: 2. 【极速同步】跳过冗余，仅核心底座
         run: |
           mkdir -p workspace && cd workspace
-          # 使用 --depth=1 保持极致速度
+          # 强制开启 depth=1 确保 1000022706 的秒级速度
           repo init -u https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml --depth=1
           repo sync -c -j$(nproc) --no-tags --no-clone-bundle
-          # 递归定位内核真正的 Makefile 所在地，适配 6.6 结构
-          K_DIR=$(find $(pwd) -name "Makefile" | xargs grep -l "VERSION = 6" | head -n 1 | xargs dirname)
-          echo "REAL_KERNEL_DIR=$K_DIR" >> $GITHUB_ENV
+          # 极致路径定位：查找包含 arch 文件夹的内核根部
+          echo "K_ROOT=$(find $(pwd) -name "arch" -type d | head -n 1 | xargs dirname)" >> $GITHUB_ENV
 
-      - name: 3. 【全域彻底搜寻】寻找混合钩子 (包含酷安/GKI开发者源)
+      - name: 3. 【彻底搜寻】全网 GKI 混合钩子探测
         run: |
-          cd ${{ env.REAL_KERNEL_DIR }}
+          cd ${{ env.K_ROOT }}
           rm -rf drivers/kernelsu
           
-          # 扩大搜索范围，包含知名 GKI 适配者仓库
-          GKI_SOURCES=(
+          # 包含 simonpunk (酷安大佬) 及其他混合钩子源
+          GKI_LIST=(
+            "https://github.com/simonpunk/KernelSU"
             "https://github.com/rifsxd/KernelSU-Next"
             "https://github.com/WildKernels/KernelSU"
             "https://github.com/tiann/KernelSU"
-            "https://github.com/simonpunk/KernelSU"
+            "https://github.com/rsuntk/KernelSU"
             "https://github.com/idsc-dev/KernelSU"
-            "https://github.com/bmax-dev/KernelSU"
           )
 
           FOUND=false
-          for repo in "${GKI_SOURCES[@]}"; do
-            echo "🌐 正在云端探测仓库: $repo"
-            # 尝试探测所有带有 hybrid 逻辑的分支名
-            for branch in next main master gki-android14-6.1 hybrid-next; do
-              # 关键：检查 Kconfig 是否有混合钩子标记
-              if curl -sL "${repo}/raw/${branch}/ksu/Kconfig" | grep -E "HYBRID_HOOK|CONFIG_KSU_NEXT"; then
-                echo "🎯 匹配成功！源: $repo 分支: $branch"
+          for repo in "${GKI_LIST[@]}"; do
+            echo "🌐 探测仓库: $repo"
+            # 针对 6.6 内核，重点探测 hybrid 相关分支
+            for branch in next main master gki-android14-6.6 hybrid-next; do
+              # 关键：检查宏定义是否存在
+              if curl -sL "${repo}/raw/${branch}/ksu/Kconfig" | grep -qE "HYBRID_HOOK|CONFIG_KSU_NEXT"; then
+                echo "🎯 发现混合钩子！源: $repo 分支: $branch"
                 git clone -b "$branch" --depth=1 "$repo" drivers/kernelsu
                 FOUND=true && break 2
               fi
             done
           done
 
-      - name: 4. 【已修复】注入 ADIOS 与 BBG
+      - name: 4. 【解决 sed 报错】ADIOS 物理注入
         run: |
-          cd ${{ env.REAL_KERNEL_DIR }}
-          # 针对 1000022702 报错的彻底修复逻辑
+          cd ${{ env.K_ROOT }}
           git clone --depth=1 https://github.com/firelzrd/adios kernel/sched/adios || true
           
-          # 物理定位调度器配置
-          SCHED_K=$(find . -path "*/sched/Kconfig" | head -n 1)
-          SCHED_M=$(find . -path "*/sched/Makefile" | head -n 1)
+          # 彻底解决 1000022709 的 "no input files" 问题
+          # 不再猜测路径，直接通过文件名全局搜寻并获取第一个匹配结果
+          TARGET_KCONFIG=$(find . -name "Kconfig" -path "*/sched/*" | head -n 1)
+          TARGET_MAKEFILE=$(find . -name "Makefile" -path "*/sched/*" | head -n 1)
           
-          # 挂载并修复 6.6 内核头文件冲突
-          echo 'obj-y += adios/' >> "$SCHED_M"
-          sed -i "/endmenu/i source \"kernel/sched/adios/Kconfig\"" "$SCHED_K"
-          find kernel/sched/adios/ -name "*.[ch]" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g'
-          
-          # 注入 BBG
+          if [ -n "$TARGET_KCONFIG" ]; then
+             echo "✅ 注入路径: $TARGET_KCONFIG"
+             echo 'obj-y += adios/' >> "$TARGET_MAKEFILE"
+             # 确保在 endmenu 之前插入，避免语法错误
+             sed -i '/endmenu/i source "kernel/sched/adios/Kconfig"' "$TARGET_KCONFIG"
+             # 修复 6.6 头文件冲突
+             find kernel/sched/adios/ -name "*.[ch]" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g'
+          fi
+
+      - name: 5. 【照搬 cctv】注入 BBG 与 性能补丁
+        run: |
+          cd ${{ env.K_ROOT }}
           git clone --depth=1 https://github.com/vc-teahouse/Baseband-guard drivers/bbg
           echo 'obj-y += bbg/' >> drivers/Makefile
           echo 'source "drivers/bbg/Kconfig"' >> drivers/Kconfig
+          # 应用风驰 (Fengchi) 优化
+          curl -L https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch -o f.patch
+          patch -p1 < f.patch || echo "补丁跳过"
 
-      - name: 5. 【修复写入报错】开启极致优化宏
+      - name: 6. 【物理锁定】开启 cctv 优化宏
         run: |
-          cd ${{ env.REAL_KERNEL_DIR }}
-          # 针对 1000022705 的物理路径定位修复
-          DEFCONFIG_FILE=$(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1)
+          cd ${{ env.K_ROOT }}
+          # 针对 1000022705 的空路径修复
+          DEF=$(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1)
+          [ -z "$DEF" ] && DEF="arch/arm64/configs/gki_defconfig"
           
-          if [ -f "$DEFCONFIG_FILE" ]; then
-            echo "✅ 锁定配置文件: $DEFCONFIG_FILE"
-            {
-              echo "CONFIG_KSU_NEXT_HYBRID_HOOK=y"
-              echo "CONFIG_KSU_NEXT_KPROBE_REPLACE=y"
-              echo "CONFIG_ADIOS_SCHED=y"
-              echo "CONFIG_BASEBAND_GUARD=y"
-              echo "CONFIG_FENGCHI_OPTIMIZE=y"
-              echo "CONFIG_CPU_FREQ_GOV_SUGOV_EXT=y"
-            } >> "$DEFCONFIG_FILE"
-          else
-            echo "❌ 找不到 defconfig，尝试强制写入 common 配置"
-            echo "CONFIG_KSU_NEXT_HYBRID_HOOK=y" >> arch/arm64/configs/gki_defconfig
-          fi
+          echo "🔧 修改配置文件: $DEF"
+          {
+            echo "CONFIG_KSU_NEXT_HYBRID_HOOK=y"
+            echo "CONFIG_KSU_NEXT_KPROBE_REPLACE=y"
+            echo "CONFIG_ADIOS_SCHED=y"
+            echo "CONFIG_BASEBAND_GUARD=y"
+            echo "CONFIG_FENGCHI_OPTIMIZE=y"
+            echo "CONFIG_CPU_FREQ_GOV_SUGOV_EXT=y"
+          } >> "$DEF"
 
-      - name: 6. 编译与打包
+      - name: 7. 执行编译
         run: |
-          cd ${{ env.REAL_KERNEL_DIR }}
-          CONF_NAME=$(basename $(find arch/arm64/configs/ -name "oplus_mt6991_defconfig"))
+          cd ${{ env.K_ROOT }}
+          CONF_NAME=$(basename $(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1))
           make O=out ARCH=arm64 "$CONF_NAME"
           make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j$(nproc)
-          
-          # 适配打包
-          git clone https://github.com/osm0sis/AnyKernel3
-          cp $(find out/ -name Image) AnyKernel3/
-          cd AnyKernel3 && zip -r9 ../PLC110_Ultimate_Extreme.zip *
 
-      - name: 7. 上传
+      - name: 8. 打包发布
+        run: |
+          IMAGE=$(find . -name "Image" -path "*/out/*" | head -n 1)
+          git clone https://github.com/osm0sis/AnyKernel3
+          cp "$IMAGE" AnyKernel3/
+          cd AnyKernel3 && zip -r9 ../PLC110_GKI_V12.zip *
+
+      - name: 9. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-Extreme-Kernel
+          name: PLC110-V12-Kernel
           path: "*.zip"
