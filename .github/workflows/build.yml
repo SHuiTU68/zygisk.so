@@ -1,4 +1,4 @@
-name: OnePlus MT6991 Wild-Ultimate V8 (No Hmbird)
+name: OnePlus MT6991 Wild-Ultimate Stable
 on:
   workflow_dispatch:
 
@@ -6,7 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境准备
+      - name: 1. 纯净环境初始化
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip libncurses-dev ipset python-is-python3
@@ -19,89 +19,81 @@ jobs:
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 3. 【彻底清理】移除所有 Hmbird 相关干扰
-        run: |
-          cd kernel-source
-          # 确保没有任何残留的 Hmbird 宏定义干扰风驰补丁
-          git checkout -- arch/arm64/configs/gki_defconfig || true
-
-      - name: 4. 【核心】应用风驰 (Fengchi) 补丁
-        # 现在不再有 Hmbird 冲突，补丁应该可以顺利应用
+      - name: 3. 【第一步】应用风驰 (Fengchi) 补丁
+        # 在源码最干净的时候打补丁，这是回退到“可打补丁版本”的关键
         run: |
           cd kernel-source
           wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          patch -p1 < fengchi.patch || { echo "PATCH_ERROR: 风驰补丁应用失败"; exit 1; }
+          patch -p1 < fengchi.patch || { echo "风驰补丁失败，请检查源码是否已变动"; exit 1; }
 
-      - name: 5. 集成 KSU Next 并锁定 Hybrid 模式
+      - name: 4. 集成 KSU Next (开启 Hybrid)
         run: |
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          # 强制编译 hooks 确保 Kprobes 挂钩能力
+          # 强制编译 hooks 确保 Kprobes 正常工作
           sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile
           sed -i 's/if (!ksu_kprobes_enrolled)/if (0)/g' kernel/ksu/supercalls.c
 
-      - name: 6. 集成 luyanci-susfs4oki (解决 build.log 报错)
+      - name: 5. 集成 luyanci-susfs4oki (不修改 stat.h 的安全方案)
+        # 解决 build.log 中的 Error 2：绝对不动 include/linux/stat.h
         run: |
           cd kernel-source
           curl -LSs "https://github.com/luyanci/susfs4oki/raw/main/fs/susfs.c" -o fs/susfs.c
           curl -LSs "https://github.com/luyanci/susfs4oki/raw/main/include/linux/susfs.h" -o include/linux/susfs.h
           
+          # 注册编译对象
           echo "obj-y += susfs.o" >> fs/Makefile
           
-          # 修复 stat.h (增加内核隔离，彻底解决 headers_install.sh 的 Error 2)
-          sed -i '/unsigned int	blocks;/a \	unsigned long long susfs_state;' include/linux/stat.h
-          sed -i '1i #ifdef __KERNEL__\n#include <linux/susfs.h>\n#endif' include/linux/stat.h
+          # 【安全注入方案】在 fs/open.c 中本地声明，绕过头文件导出冲突
+          sed -i '/int vfs_statx(int dfd/i #include <linux/susfs.h>' fs/open.c
+          sed -i '/int vfs_statx(int dfd/i struct kstat { uint32_t result_mask; umode_t mode; unsigned int nlink; uint32_t uid; uint32_t gid; dev_t dev; ino_t ino; loff_t size; struct timespec64 atime; struct timespec64 mtime; struct timespec64 ctime; struct timespec64 btime; uint32_t blksize; uint32_t attributes; uint32_t attributes_mask; uint64_t blocks; unsigned long long susfs_state; };' fs/open.c || true
           
-          # 精准注入 VFS 钩子
+          # 注入 VFS 钩子
           sed -i '/int vfs_statx(int dfd/ {n; a \	struct kstat stat;\n\tunsigned long long susfs_state = 0;' -i fs/open.c; } || true
 
-      - name: 7. 开启 Wild 其它特性 (TTL/IPSET/Kprobes)
+      - name: 6. 配置内核特性 (TTL/IPSET/KPROBES)
         run: |
           cd kernel-source
           DEFCONFIG="arch/arm64/configs/gki_defconfig"
-          # 禁用 Hmbird，开启风驰及其它
-          scripts/config --file $DEFCONFIG -d CONFIG_OPLUS_FEATURE_HMBIRD
-          scripts/config --file $DEFCONFIG -e CONFIG_OPLUS_FEATURE_FENGCHI
           scripts/config --file $DEFCONFIG -e CONFIG_KPROBES
           scripts/config --file $DEFCONFIG -e CONFIG_KPROBE_EVENTS
           scripts/config --file $DEFCONFIG -e CONFIG_NETFILTER_XT_TARGET_HL
           scripts/config --file $DEFCONFIG -e CONFIG_IP_SET
-          # 强制 O2 性能级别
+          # 禁用干扰宏
+          scripts/config --file $DEFCONFIG -d CONFIG_OPLUS_FEATURE_HMBIRD
+          # 强制 O2
           sed -i 's/-Os/-O2/g' Makefile
 
-      - name: 8. 正式编译 (全量日志记录)
+      - name: 7. 执行正式编译 (捕捉完整日志)
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           make clean && make mrproper
           
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
-          
-          # 捕捉配置日志
           make -j$(nproc) $MAKE_ARGS gki_defconfig 2>&1 | tee ../build.log
           
-          # 确保 SuSFS 运行宏被激活
+          # 注入 SuSFS 宏
           scripts/config --file .config -e CONFIG_KSU_SUSFS
           scripts/config --file .config -e CONFIG_KSU_SUSFS_SUS_PATH
           scripts/config --file .config -e CONFIG_KSU_SUSFS_SUS_MOUNT
           
-          # 主程序编译
           make -j$(nproc) $MAKE_ARGS V=1 Image.gz 2>&1 | tee -a ../build.log || exit 1
 
-      - name: 9. 打包 AnyKernel3
+      - name: 8. 打包发布
         if: success()
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.gz AK3/
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AK3/anykernel.sh
           sed -i 's/block=auto/block=boot/g' AK3/anykernel.sh
-          cd AK3 && zip -r9 ../OnePlus-MT6991-Wild-V8.zip *
+          cd AK3 && zip -r9 ../OnePlus-MT6991-Wild-Ultimate.zip *
 
-      - name: 10. 自动上传日志/产物
+      - name: 9. 自动上传
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Build-V8-Final
+          name: Build-Result-Stable
           path: |
-            ./OnePlus-MT6991-Wild-V8.zip
+            ./OnePlus-MT6991-Wild-Ultimate.zip
             ./build.log
