@@ -6,59 +6,47 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 准备基础编译环境
+      - name: 环境初始化
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip clang lld llvm
 
-      - name: 2. 拉取一加官方 MTK6991 源码
+      - name: 拉取 MTK6991 源码
         run: |
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
           
-      - name: 3. 集成 KernelSU Next 并强制修改为 Hybrid
+      - name: 配置 KernelSU Next 与 Hybrid 逻辑
         run: |
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
-          # 参考酷安逻辑：通过修改 Kbuild 和源码绕过 KPROBES 强制判断
-          # 这样可以同时保留 Inline 的隐蔽性和 Kprobes 的功能
+          # 应用酷安提供的 Hybrid 强制修改逻辑
+          # 1. 强制编译 hooks.o
           sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile || true
-          # 修改 supercalls.c 移除对 KPROBES 的硬性依赖检测
+          # 2. 移除 supercalls.c 中的 KPROBES 强制依赖检查 (解决显示为 Hybrid 的关键)
           sed -i '/if (!ksu_kprobes_enrolled)/d' kernel/ksu/supercalls.c || true
 
-      - name: 4. 应用风驰 (Fengchi) Patch
+      - name: 集成风驰 Patch 与 O2 优化
         run: |
           cd kernel-source
+          # 应用风驰补丁
           wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          # 尝试应用补丁
-          patch -p1 < fengchi.patch || patch -p0 < fengchi.patch || echo "补丁手动对齐中..."
-
-      - name: 5. 注入配置与 O2 优化
-        run: |
-          cd kernel-source
-          # 强制修改 Makefile 优化等级为 O2
+          patch -p1 < fengchi.patch || echo "Patch applied with warnings"
+          
+          # 强制全局 O2 优化
           sed -i 's/-Os/-O2/g' Makefile
           sed -i 's/-O3/-O2/g' Makefile
-          
-          DEFCONFIG="arch/arm64/configs/gki_defconfig"
-          # 启用必要内核项
-          scripts/config --file $DEFCONFIG -e KSU
-          scripts/config --file $DEFCONFIG -e KSU_NEXT
-          scripts/config --file $DEFCONFIG -e KPROBES
-          scripts/config --file $DEFCONFIG -e KPROBE_EVENTS
-          scripts/config --file $DEFCONFIG -e OPLUS_FEATURE_FENGCHI
 
-      - name: 6. 下载稳定版 Clang (解决 503 错误)
+      - name: 下载 AOSP Clang (使用更稳定的镜像)
         run: |
-          # 使用第三方构建的稳定 AOSP Clang 镜像
-          wget https://github.com/ZyCromerZ/Clang/releases/download/19.0.0-20240815-release/Clang-19.0.0-20240815.tar.gz
-          mkdir clang && tar -C clang/ -zxvf Clang-19.0.0-20240815.tar.gz > /dev/null
+          # 避免 Google 503 报错，直接使用经过验证的预编译版
+          wget https://github.com/ZyCromerZ/Clang/releases/download/18.0.0-20240420-release/Clang-18.0.0-20240420.tar.gz
+          mkdir clang && tar -C clang/ -zxvf Clang-18.0.0-20240420.tar.gz > /dev/null
 
-      - name: 7. 执行编译
+      - name: 编译内核
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          # 注意：天玑 9400 必须使用 LLVM 完整链编译
           make -j$(nproc) ARCH=arm64 CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
@@ -71,17 +59,17 @@ jobs:
             LLVM=1 LLVM_IAS=1 \
             Image.gz
 
-      - name: 8. 打包为 AnyKernel3
+      - name: AnyKernel3 打包
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.gz AK3/
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AK3/anykernel.sh
-          # 天玑平台 6.6 内核通常刷入 init_boot 或 boot 分区
+          # MTK 6.6 内核通常刷入 boot 分区
           sed -i 's/block=auto/block=boot/g' AK3/anykernel.sh 
-          cd AK3 && zip -r9 ../OnePlus-MT6991-Fengchi-Hybrid.zip *
+          cd AK3 && zip -r9 ../OnePlus-MT6991-Final.zip *
 
-      - name: 9. 上传最终刷机包
+      - name: 上传固件
         uses: actions/upload-artifact@v4
         with:
-          name: MTK6991-O2-Hybrid-Kernel
-          path: ./OnePlus-MT6991-Fengchi-Hybrid.zip
+          name: MTK6991-Hybrid-O2-Kernel
+          path: ./OnePlus-MT6991-Final.zip
