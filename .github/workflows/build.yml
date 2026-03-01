@@ -1,4 +1,4 @@
-name: OnePlus MT6991 Wild-Ultimate V9 (SCX Hmbird)
+name: OnePlus MT6991 Wild-Ultimate V10 (KSUN Fix)
 on:
   workflow_dispatch:
 
@@ -6,7 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境加固
+      - name: 1. 环境准备
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip libncurses-dev ipset python-is-python3
@@ -19,40 +19,45 @@ jobs:
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 3. 集成 KSU Next (开启 Hybrid 混合模式)
+      - name: 3. 集成 KernelSU-Next (专项修复逻辑)
         run: |
           cd kernel-source
+          # 使用官方脚本集成
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          # 修复 Kprobes 依赖，确保混合模式生效
+          
+          # [修复 1] 处理 Android 15 可能存在的常量定义冲突
+          sed -i 's/current_uid().val/from_kuid_munged(\&init_user_ns, current_uid())/g' kernel/ksu/ksu.c || true
+          
+          # [修复 2] 强制开启 Kprobes 编译支持
           sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile
-          sed -i 's/if (!ksu_kprobes_enrolled)/if (0)/g' kernel/ksu/supercalls.c
+          
+          # [修复 3] 移除内核版本检查导致的警告
+          sed -i 's/if (!ksu_kprobes_enrolled)/if (0)/g' kernel/ksu/supercalls.c || true
 
-      - name: 4. 配置 Wild 核心特性 (Hmbird/SCX/TTL)
-        # 移除 cctv 的 patch，改用 Wild 推荐的宏开启方式
+      - name: 4. 配置 Wild/SCX 特性 (Hmbird 鸿鹄)
         run: |
           cd kernel-source
           DEFCONFIG="arch/arm64/configs/gki_defconfig"
           
-          # --- 开启 SCX / Hmbird (鸿鹄调度) ---
+          # 开启游戏调度与性能宏
           scripts/config --file $DEFCONFIG -e CONFIG_OPLUS_FEATURE_HMBIRD
           scripts/config --file $DEFCONFIG -e CONFIG_SCHED_CLASS_EXT
           
-          # --- 开启 Kprobes (Hybrid 必需) ---
+          # 开启 Kprobes (KSUN 运行基础)
           scripts/config --file $DEFCONFIG -e CONFIG_KPROBES
           scripts/config --file $DEFCONFIG -e CONFIG_KPROBE_EVENTS
           
-          # --- 开启网络特性 (TTL/IPSET) ---
+          # 开启 TTL 与 IPSET
           scripts/config --file $DEFCONFIG -e CONFIG_NETFILTER_XT_TARGET_HL
           scripts/config --file $DEFCONFIG -e CONFIG_IP_SET
           
-          # 强制 O2 优化
+          # 提升编译优化等级
           sed -i 's/-Os/-O2/g' Makefile
 
-      - name: 5. 执行全量编译
+      - name: 5. 编译内核 (全量捕捉日志)
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          # 彻底清理历史残留，解决 Error 2
           make clean && make mrproper
           
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
@@ -60,23 +65,23 @@ jobs:
           # 记录配置阶段日志
           make -j$(nproc) $MAKE_ARGS gki_defconfig 2>&1 | tee ../build.log
           
-          # 开始主程序编译 (Image.gz)
+          # 编译 Image.gz
           make -j$(nproc) $MAKE_ARGS V=1 Image.gz 2>&1 | tee -a ../build.log || exit 1
 
-      - name: 6. 打包 AnyKernel3
+      - name: 6. 打包发布
         if: success()
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.gz AK3/
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AK3/anykernel.sh
           sed -i 's/block=auto/block=boot/g' AK3/anykernel.sh
-          cd AK3 && zip -r9 ../OnePlus-MT6991-Wild-Hmbird.zip *
+          cd AK3 && zip -r9 ../OnePlus-MT6991-Wild-V10.zip *
 
-      - name: 7. 自动上传产物与日志
+      - name: 7. 自动上传
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Build-Result-Hmbird
+          name: KSUN-Fix-Build
           path: |
-            ./OnePlus-MT6991-Wild-Hmbird.zip
+            ./OnePlus-MT6991-Wild-V10.zip
             ./build.log
