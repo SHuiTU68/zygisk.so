@@ -1,4 +1,4 @@
-name: PLC110_Ultimate_Build
+name: PLC110_CCTV_Extreme_Port
 on:
   workflow_dispatch:
 
@@ -6,73 +6,85 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境准备
+      - name: 1. 环境加固
         run: sudo apt update && sudo apt install repo curl git python3 patch zip -y
 
-      - name: 2. 同步官方底座 (使用 Repo)
+      - name: 2. 同步底座 (Midas/PLC110)
         run: |
-          mkdir -p android/kernel && cd android/kernel
+          mkdir -p workspace && cd workspace
           repo init -u https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
           repo sync -c -j$(nproc) --no-tags --no-clone-bundle
+          # 动态获取内核根目录，彻底解决 Termux 遗留的路径问题
+          echo "KERNEL_ROOT=$(find $(pwd) -name "arch" -type d | head -n 1 | xargs dirname)" >> $GITHUB_ENV
 
-      - name: 3. 注入 KSUN-Next (混合钩子)
-        # 强制指定在源码所在目录运行，修复 No such file 报错
+      - name: 3. 照搬：注入 ADIOS 调度器
         run: |
-          cd android/kernel/common
-          rm -rf drivers/kernelsu
-          git clone -b next --depth=1 https://github.com/rifsxd/KernelSU-Next drivers/kernelsu
-          echo "✅ 混合钩子驱动已注入"
-
-      - name: 4. 注入 ADIOS 调度器
-        run: |
-          cd android/kernel/common
+          cd ${{ env.KERNEL_ROOT }}
+          # 按照 cctv 的移植习惯，直接克隆到 kernel/sched/adios
           git clone --depth=1 https://github.com/firelzrd/adios kernel/sched/adios
+          
+          # 挂载 Makefile 和 Kconfig
           echo 'obj-y += adios/' >> kernel/sched/Makefile
-          # 动态挂载 Kconfig
           sed -i '/endmenu/i source "kernel/sched/adios/Kconfig"' kernel/sched/Kconfig
-          echo "✅ ADIOS 调度器已挂载"
+          
+          # 针对 6.6 内核的兼容性微调 (照搬 cctv 对高版本内核的修复逻辑)
+          find kernel/sched/adios/ -name "*.c" -o -name "*.h" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g'
 
-      - name: 5. 注入 Baseband-guard (BBG)
+      - name: 4. 照搬：注入 Baseband-guard (BBG)
         run: |
-          cd android/kernel/common
+          cd ${{ env.KERNEL_ROOT }}
           git clone --depth=1 https://github.com/vc-teahouse/Baseband-guard drivers/bbg
           echo 'obj-y += bbg/' >> drivers/Makefile
           echo 'source "drivers/bbg/Kconfig"' >> drivers/Kconfig
-          echo "✅ BBG 基带守护已挂载"
 
-      - name: 6. 应用性能补丁与配置宏
+      - name: 5. 照搬：KSUN-Next 混合钩子
         run: |
-          cd android/kernel/common
-          # 下载补丁
+          cd ${{ env.KERNEL_ROOT }}
+          rm -rf drivers/kernelsu
+          # 强制拉取包含混合钩子逻辑的 next 分支
+          git clone -b next --depth=1 https://github.com/rifsxd/KernelSU-Next drivers/kernelsu
+
+      - name: 6. 极致还原：性能补丁与 sugov_ext 宏配置
+        run: |
+          cd ${{ env.KERNEL_ROOT }}
+          # 应用风驰 (Fengchi) 补丁
           curl -L https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch -o fengchi.patch
-          patch -p1 < fengchi.patch || echo "⚠️ 部分补丁冲突，已跳过"
+          patch -p1 < fengchi.patch || echo "⚠️ 部分补丁冲突已跳过"
           
-          # 开启所有核心优化宏
+          # 完全照搬 cctv 对 oplus_mt6991_defconfig 的修改逻辑
           DEFCONFIG="arch/arm64/configs/oplus_mt6991_defconfig"
           {
+            # 性能核心
+            echo "CONFIG_FENGCHI_OPTIMIZE=y"
+            echo "CONFIG_ADIOS_SCHED=y"
+            # 混合钩子
             echo "CONFIG_KSU_NEXT_HYBRID_HOOK=y"
             echo "CONFIG_KSU_NEXT_KPROBE_REPLACE=y"
-            echo "CONFIG_ADIOS_SCHED=y"
+            # 基带守护
             echo "CONFIG_BASEBAND_GUARD=y"
-            echo "CONFIG_FENGCHI_OPTIMIZE=y"
-          } >> $DEFCONFIG
+            # 针对 sugov_ext 的 MTK 专属优化宏
+            echo "CONFIG_CPU_FREQ_GOV_SUGOV_EXT=y"
+            echo "CONFIG_MTK_SCHED_BOOST=y"
+            echo "CONFIG_MTK_CPU_QUOTA_ADAPTIVE=y"
+          } >> "$DEFCONFIG"
 
-      - name: 7. 执行编译 (天玑 9400)
+      - name: 7. 执行 LLVM 编译 (照搬 cctv 工具链参数)
         run: |
-          cd android/kernel/common
+          cd ${{ env.KERNEL_ROOT }}
           make O=out ARCH=arm64 oplus_mt6991_defconfig
+          # 使用 LLVM=1 LLVM_IAS=1 确保与一加 13/Ace5 系列原厂编译环境对齐
           make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j$(nproc)
 
       - name: 8. 打包 AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3
-          cp android/kernel/common/out/arch/arm64/boot/Image AnyKernel3/
+          cp ${{ env.KERNEL_ROOT }}/out/arch/arm64/boot/Image AnyKernel3/
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../PLC110_Ultimate_Kernel.zip *
+          zip -r9 ../PLC110_CCTV_Extreme.zip *
 
-      - name: 9. 发布产物
+      - name: 9. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-Extreme-Kernel
-          path: PLC110_Ultimate_Kernel.zip
+          name: PLC110-CCTV-Kernel
+          path: PLC110_CCTV_Extreme.zip
