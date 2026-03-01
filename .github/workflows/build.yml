@@ -1,5 +1,5 @@
+name: Build & Package PLC110 Kernel
 
-name: Build-PLC110-Full-Modified
 on:
   workflow_dispatch:
 
@@ -7,119 +7,61 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Maximize Space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 16384
-          remove-dotnet: 'true'
-          remove-android: 'true'
-
-      - name: Install Dependencies
+      - name: 环境准备
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison git libelf-dev libssl-dev lz4 liblz4-tool python3-pip zip tar curl sed uuid-dev wget pahole
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu git git-lfs gnupg gperf libncurses5-dev libssl-dev python3 rsync zip
 
-      - name: Sync Source & Clang
+      - name: 源码同步
         run: |
-          # 参考 sakfi 仓库的同步逻辑，并修复 128 分支错误
-          REPO="https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991"
-          git clone --depth=1 $REPO -b oneplus/mtk6991 kernel_src || git clone --depth=1 $REPO kernel_src
-          
-          mkdir clang
-          curl -LSs https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522830.tar.gz | tar -xzC clang
+          mkdir kernel && cd kernel
+          git config --global user.email "bot@example.com"
+          git config --global user.name "KernelBot"
+          repo init -u https://github.com/SHuiTU68/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: Integrate Pershoot KSUN & SUSFS
+      - name: 集成 KernelSU (Pershoot Hybrid)
         run: |
-          cd kernel_src
-          # 1. 核心：拉取 Pershoot 的 KSUN 实现 Hybrid Hook
-          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/main/kernel/setup.sh" | bash -s main
-          
-          # 2. 集成 luyanci 的 susfs4oki 补丁
-          git clone https://github.com/luyanci/susfs4oki ../susfs
-          cp ../susfs/kernel_patches/6.6/0001-kernel-fs-add-susfs-support-v1.5.1.patch ./
-          patch -p1 < 0001-kernel-fs-add-susfs-support-v1.5.1.patch || echo "SUSFS patch skip"
-          
-          # 3. 注入风驰游戏补丁
-          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          patch -p1 < fengchi.patch || echo "Fengchi patch skip"
+          cd kernel/common
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s pershoot
 
-      - name: Kernel Config & O2 Optimization
+      - name: 应用风驰补丁
         run: |
-          cd kernel_src
-          # 性能优化与配置对齐
-          sed -i 's/CONFIG_CC_OPTIMIZE_FOR_SIZE=y/CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y/g' arch/arm64/configs/gki_defconfig
-          sed -i 's/-Os/-O2/g' Makefile
-          
-          # 启用 SUSFS 配置项
-          echo "CONFIG_SUSFS=y" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_SUSFS_SHOW_VERSION=y" >> arch/arm64/configs/gki_defconfig
-          
-          # 禁用 Kprobes 以实现 Hybrid Hook
+          cd kernel/common
+          wget https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
+          git apply fengchi.patch || echo "补丁应用略有冲突，请检查源码"
+
+      - name: 禁用 KPROBES (方案1)
+        run: |
+          cd kernel/common
+          find arch/arm64/configs/ -name "*defconfig*" -exec sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' {} +
           echo "CONFIG_KPROBES=n" >> arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KPROBE_EVENTS=n" >> arch/arm64/configs/gki_defconfig
 
-      - name: Build Kernel
+      - name: 执行编译
         run: |
-          cd kernel_src
-          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 gki_defconfig
-          make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 -j$(nproc)
+          cd kernel
+          chmod +x build_kernel.sh
+          ./build_kernel.sh plc110
 
-      - name: Package AK3 (Sakfi Logic)
+      - name: 使用 AnyKernel3 打包
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3 AK3
+          # 克隆 AK3 模版（根据你截图的 Wild 风格，这里建议拉取基础模版）
+          git clone https://github.com/osm0sis/AnyKernel3.git AK3
+          
+          # 复制编译出的内核 Image 到 AK3 目录
+          # 路径通常在 kernel/out/arch/arm64/boot/Image
+          cp kernel/out/arch/arm64/boot/Image AK3/
+          
+          # 针对 PLC110 修改 anykernel.sh 配置 (参考你截图的内容)
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AK3/anykernel.sh
+          sed -i 's/block=auto/block=boot/g' AK3/anykernel.sh
+          
+          # 制作 Zip 包
           cd AK3
-          rm -rf .git README.md
-          
-          # 复制编译出的 Image
-          cp ../kernel_src/out/arch/arm64/boot/Image ./Image
-          
-          # 写入匹配你截图的刷写脚本
-          cat <<EOF > anykernel.sh
-### AnyKernel3 Ramdisk Mod Script
-properties() { '
-kernel.string=KSUN-PLC110-SUSFS-Hybrid
-do.devicecheck=0
-do.modules=0
-do.systemless=0
-do.cleanup=1
-device.name1=PLC110
-supported.versions=14, 15
-'; }
+          zip -r ../PLC110-Kernel-KSU-SUSFS.zip *
 
-block=boot;
-is_slot_device=auto;
-ramdisk_compression=auto;
-patch_vbmeta_flag=auto;
-no_magisk_check=1;
-
-. tools/ak3-core.sh;
-
-# 6.6 内核检测逻辑
-kernel_version=\$(cat /proc/version | awk -F '-' '{print \$1}' | awk '{print \$3}')
-case \$kernel_version in
-  5.1*|6.1*|6.6*) ksu_supported=true ;;
-  *) ksu_supported=false ;;
-esac
-
-ui_print " " "-> Wild Kernels Supported: \$ksu_supported"
-\$ksu_supported || abort " -> Non-GKI device, abort."
-
-split_boot;
-if [ -f "split_img/ramdisk.cpio" ]; then
-  unpack_ramdisk;
-  write_boot;
-else
-  flash_boot;
-fi
-EOF
-          zip -r ../KSUN-PLC110-SUSFS.zip *
-
-      - name: Upload Artifact
+      - name: 上传刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: KSUN-PLC110-SUSFS
-          path: "*.zip"
+          name: PLC110_Kernel_Flashable
+          path: PLC110-Kernel-KSU-SUSFS.zip
