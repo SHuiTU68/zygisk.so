@@ -1,4 +1,4 @@
-name: PLC110_Hyper_Fast_Global_Search
+name: PLC110_GKI_Extreme_Search
 on: [workflow_dispatch]
 
 jobs:
@@ -8,76 +8,72 @@ jobs:
       - name: 1. 环境准备
         run: sudo apt update && sudo apt install repo curl git python3 patch zip -y
 
-      - name: 2. 【极速同步】只拉取核心内核源码
+      - name: 2. 【极速同步】4分钟完成底座拉取
         run: |
           mkdir -p workspace && cd workspace
-          # 使用 --partial-clone 和 --depth=1 极大提升速度
-          repo init -u https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml --depth=1 --partial-clone
-          # 只同步内核核心部分，跳过冗余工具链
-          repo sync -c -j$(nproc) --no-tags --no-clone-bundle --optimized-fetch
-          
-          # 自动定位 6.6 内核真实根目录
-          REAL_KERNEL_DIR=$(find $(pwd) -name "Makefile" | xargs grep -l "VERSION = 6" | head -n 1 | xargs dirname)
-          echo "REAL_KERNEL_DIR=$REAL_KERNEL_DIR" >> $GITHUB_ENV
+          repo init -u https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml --depth=1
+          repo sync -c -j$(nproc) --no-tags --no-clone-bundle
+          # 动态递归定位内核 Makefile 所在地
+          echo "REAL_KERNEL_DIR=$(find $(pwd) -name "Makefile" | xargs grep -l "VERSION = 6" | head -n 1 | xargs dirname)" >> $GITHUB_ENV
 
-      - name: 3. 【全域搜寻】寻找最强混合钩子
+      - name: 3. 【全域 GKI 搜寻】跨仓库寻找混合钩子
         run: |
           cd ${{ env.REAL_KERNEL_DIR }}
           rm -rf drivers/kernelsu
           
-          # 定义全域候选仓库
-          REPOS=(
+          # 包含酷安、GKI 开发者常用的混合钩子仓库
+          GKI_REPOS=(
             "https://github.com/rifsxd/KernelSU-Next"
             "https://github.com/WildKernels/KernelSU"
             "https://github.com/tiann/KernelSU"
-            "https://github.com/rsuntk/KernelSU"
+            "https://github.com/idsc-dev/KernelSU"
+            "https://github.com/DizzyThermal/KernelSU"
+            "https://github.com/bmax-dev/KernelSU"
           )
 
           FOUND=false
-          for repo in "${REPOS[@]}"; do
-            echo "🌐 正在探测仓库: $repo"
-            # 获取所有分支名
-            BRANCHES=$(git ls-remote --heads $repo | awk -F'refs/heads/' '{print $2}')
-            
-            for branch in $BRANCHES; do
-              echo "🔍 检查分支: $branch"
-              # 仅探测 Kconfig 文件
-              if curl -sL "${repo}/raw/${branch}/ksu/Kconfig" | grep -q "HYBRID_HOOK"; then
-                echo "🎯 发现混合钩子！正在拉取 $repo 的 $branch 分支"
+          for repo in "${GKI_REPOS[@]}"; do
+            echo "🌐 探测 GKI 仓库: $repo"
+            # 尝试探测 next, main, master, gki 三个常用分支
+            for branch in next main master gki; do
+              # 关键：检查是否有混合钩子特有的宏定义
+              if curl -sL "${repo}/raw/${branch}/ksu/Kconfig" | grep -E "HYBRID_HOOK|CONFIG_KSU_NEXT"; then
+                echo "🎯 匹配成功！仓库: $repo 分支: $branch"
                 git clone -b "$branch" --depth=1 "$repo" drivers/kernelsu
-                FOUND=true
-                break 2
+                FOUND=true && break 2
               fi
             done
           done
 
-          if [ "$FOUND" = false ]; then
-            echo "⚠️ 全域未发现混合钩子，回退至 rifsxd 默认分支"
-            git clone --depth=1 https://github.com/rifsxd/KernelSU-Next drivers/kernelsu
-          fi
-
-      - name: 4. 注入 ADIOS 与 BBG (适配 sugov_ext)
+      - name: 4. 【修复路径】注入 ADIOS 与 BBG
         run: |
           cd ${{ env.REAL_KERNEL_DIR }}
-          git clone --depth=1 https://github.com/firelzrd/adios kernel/sched/adios
+          git clone --depth=1 https://github.com/firelzrd/adios kernel/sched/adios || git clone --depth=1 https://github.com/firelzrd/adios drivers/adios
+          
+          # 暴力搜寻 Kconfig 位置，解决 1000022702 报错
+          # 不再假设它在 kernel/sched，而是全目录搜索
+          KCONFIG_PATH=$(find . -path "*/sched/Kconfig" | head -n 1)
+          MAKEFILE_PATH=$(find . -path "*/sched/Makefile" | head -n 1)
+          
+          # 确定 ADIOS 源码路径
+          ADIOS_DIR=$(find . -name "adios" -type d | head -n 1)
+          
+          echo "obj-y += $(basename $ADIOS_DIR)/" >> "$MAKEFILE_PATH"
+          sed -i "/endmenu/i source \"$ADIOS_DIR/Kconfig\"" "$KCONFIG_PATH"
+          
+          # 6.6 内核头文件兼容性自动修复
+          find . -name "adios" -type d -exec sh -c 'find {} -name "*.[ch]" | xargs sed -i "s/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g"' \;
+          
+          # 注入 BBG
           git clone --depth=1 https://github.com/vc-teahouse/Baseband-guard drivers/bbg
-          
-          # 动态修复 Kconfig 路径，防止 1000022697 的报错
-          KCONFIG_FILE=$(find kernel/sched/ -name "Kconfig" | head -n 1)
-          MAKEFILE_FILE=$(find kernel/sched/ -name "Makefile" | head -n 1)
-          echo 'obj-y += adios/' >> "$MAKEFILE_FILE"
-          sed -i '/endmenu/i source "kernel/sched/adios/Kconfig"' "$KCONFIG_FILE"
-          
-          # 6.6 内核头文件兼容修复
-          find kernel/sched/adios/ -name "*.[ch]" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g'
+          echo 'obj-y += bbg/' >> drivers/Makefile
+          echo 'source "drivers/bbg/Kconfig"' >> drivers/Kconfig
 
-      - name: 5. 极致还原 cctv 优化配置
+      - name: 5. 开启 cctv 极致优化宏
         run: |
           cd ${{ env.REAL_KERNEL_DIR }}
-          curl -L https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch -o fengchi.patch
-          patch -p1 < fengchi.patch || echo "补丁冲突已跳过"
-          
-          DEFCONFIG=$(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1)
+          # 查找正确的 defconfig
+          DEF=$(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1)
           {
             echo "CONFIG_KSU_NEXT_HYBRID_HOOK=y"
             echo "CONFIG_KSU_NEXT_KPROBE_REPLACE=y"
@@ -85,27 +81,21 @@ jobs:
             echo "CONFIG_BASEBAND_GUARD=y"
             echo "CONFIG_FENGCHI_OPTIMIZE=y"
             echo "CONFIG_CPU_FREQ_GOV_SUGOV_EXT=y"
-          } >> "$DEFCONFIG"
+          } >> "$DEF"
 
-      - name: 6. 开启云端高速编译
+      - name: 6. 编译与打包
         run: |
           cd ${{ env.REAL_KERNEL_DIR }}
-          # 自动寻找并应用 defconfig
-          CONF=$(basename $(find arch/arm64/configs/ -name "oplus_mt6991_defconfig"))
-          make O=out ARCH=arm64 "$CONF"
+          make O=out ARCH=arm64 $(basename $(find arch/arm64/configs/ -name "oplus_mt6991_defconfig"))
           make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j$(nproc)
-
-      - name: 7. 打包产物
-        run: |
-          IMAGE=$(find . -name "Image" -path "*/out/*" | head -n 1)
+          
+          # 打包
           git clone https://github.com/osm0sis/AnyKernel3
-          cp "$IMAGE" AnyKernel3/
-          cd AnyKernel3
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../PLC110_Extreme_$(date +%m%d).zip *
+          cp $(find out/ -name Image) AnyKernel3/
+          cd AnyKernel3 && zip -r9 ../PLC110_GKI_Extreme.zip *
 
-      - name: 8. 上传
+      - name: 7. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-Extreme-Kernel
+          name: PLC110-GKI-Extreme
           path: "*.zip"
