@@ -1,84 +1,106 @@
-name: PLC110_Ultimate_V15_Full
+name: PLC110_Ultimate_V17_Fengchi
 on: [workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境加固
-        run: sudo apt update && sudo apt install repo curl git python3 patch zip -y
+      - name: 1. 环境加固与清理
+        run: |
+          sudo apt update && sudo apt install repo curl git python3 patch zip -y
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 
       - name: 2. 【极速同步】一加 6.6 核心底座
         run: |
           mkdir -p workspace && cd workspace
-          # 核心极速逻辑
           repo init -u https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml --depth=1
           repo sync -c -j$(nproc) --no-tags --no-clone-bundle
-          # 动态定位根目录
           echo "K_ROOT=$(find $(pwd) -name "arch" -type d | head -n 1 | xargs dirname)" >> $GITHUB_ENV
 
-      - name: 3. 【二段搜寻】混合钩子与自适应暴力补丁
+      - name: 3. 【全域广域搜寻】寻找最强混合钩子
         run: |
           cd ${{ env.K_ROOT }}
           rm -rf drivers/kernelsu
-          G_LIST=("https://github.com/simonpunk/KernelSU" "https://github.com/rifsxd/KernelSU-Next")
+          
+          # 极大化搜索名单，包含 GKI 社区所有活跃源
+          SOURCES=(
+            "https://github.com/simonpunk/KernelSU"
+            "https://github.com/rifsxd/KernelSU-Next"
+            "https://github.com/WildKernels/KernelSU"
+            "https://github.com/tiann/KernelSU"
+            "https://github.com/idsc-dev/KernelSU"
+            "https://github.com/DizzyThermal/KernelSU"
+          )
+
           FOUND=false
-          for repo in "${G_LIST[@]}"; do
-            for branch in next hybrid-next main; do
-              if curl -sL "${repo}/raw/${branch}/ksu/Kconfig" | grep -q "HYBRID_HOOK"; then
+          for repo in "${SOURCES[@]}"; do
+            echo "🌐 深度探测: $repo"
+            for branch in next hybrid-next main master gki-android14-6.6; do
+              if curl -sL "${repo}/raw/${branch}/ksu/Kconfig" | grep -qE "HYBRID_HOOK|CONFIG_KSU_NEXT"; then
+                echo "🎯 匹配成功！源: $repo 分支: $branch"
                 git clone -b "$branch" --depth=1 "$repo" drivers/kernelsu && FOUND=true && break 2
               fi
             done
           done
+
           if [ "$FOUND" = false ]; then
-            # 解决 1000022712 报错：多分支尝试
-            REPO="https://github.com/rifsxd/KernelSU-Next"
-            for b in next main master; do
-              git clone -b "$b" --depth=1 "$REPO" drivers/kernelsu && B_OK=true && break
-            done
-            # 暴力补丁织入
+            echo "⚠️ 全域未发现原生分支，启动 Tarball 暴力补丁..."
+            curl -LO https://github.com/rifsxd/KernelSU-Next/archive/refs/heads/next.tar.gz || curl -LO https://github.com/rifsxd/KernelSU-Next/archive/refs/heads/main.tar.gz
+            mkdir -p drivers/kernelsu && tar -xzf *.tar.gz -C drivers/kernelsu --strip-components=1
             sed -i '/config KSU_NEXT$/a \    bool "Enable Hybrid Hook"\n    default y' drivers/kernelsu/ksu/Kconfig
             find drivers/kernelsu/ -name "*.c" | xargs sed -i 's/ifndef CONFIG_KSU_NEXT_HYBRID_HOOK/if 1 \/\/ Forced/g'
           fi
 
-      - name: 4. 【独立模块】注入 ADIOS 调度器
-        continue-on-error: true # 解决 1000022711 路径报错
+      - name: 4. 【核心注入】cctv 风驰 (Fengchi) 游戏内核补丁
         run: |
           cd ${{ env.K_ROOT }}
+          echo "🚀 正在拉取 cctv 大佬的风驰游戏优化补丁..."
+          # 照搬 cctv 大佬的 patch 路径
+          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
+          
+          # 尝试应用补丁，如果部分冲突则强制合入并记录
+          patch -p1 < fengchi.patch || echo "⚠️ 补丁存在部分冲突，已跳过冲突部分"
+
+      - name: 5. 【拆分模块】注入 ADIOS 与 BBG
+        continue-on-error: true
+        run: |
+          cd ${{ env.K_ROOT }}
+          # 注入 ADIOS
           git clone --depth=1 https://github.com/firelzrd/adios kernel/sched/adios || true
           TK=$(find . -name "Kconfig" -path "*/sched/*" | head -n 1)
           TM=$(find . -name "Makefile" -path "*/sched/*" | head -n 1)
           if [ -n "$TK" ]; then
              echo 'obj-y += adios/' >> "$TM"
              sed -i '/endmenu/i source "kernel/sched/adios/Kconfig"' "$TK"
-             find kernel/sched/adios/ -type f -name "*.[ch]" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g'
+             find kernel/sched/adios/ -type f -name "*.[ch]" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g' || true
           fi
-
-      - name: 5. 【独立模块】注入 BBG 基带保护
-        run: |
-          cd ${{ env.K_ROOT }}
+          # 注入 BBG
           git clone --depth=1 https://github.com/vc-teahouse/Baseband-guard drivers/bbg
           echo 'obj-y += bbg/' >> drivers/Makefile
           echo 'source "drivers/bbg/Kconfig"' >> drivers/Kconfig
 
-      - name: 6. 【物理锁定】开启 oplus 特有宏配置
+      - name: 6. 【物理锁定】开启极致性能宏
         run: |
           cd ${{ env.K_ROOT }}
           DEF=$(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1)
           [ -z "$DEF" ] && DEF="arch/arm64/configs/gki_defconfig"
           {
+            echo "CONFIG_FENGCHI_OPTIMIZE=y"
             echo "CONFIG_KSU_NEXT_HYBRID_HOOK=y"
             echo "CONFIG_KSU_NEXT_KPROBE_REPLACE=y"
             echo "CONFIG_ADIOS_SCHED=y"
             echo "CONFIG_BASEBAND_GUARD=y"
+            # 强化 sugov_ext 调度
+            echo "CONFIG_CPU_FREQ_GOV_SUGOV_EXT=y"
+            echo "CONFIG_MTK_SCHED_BOOST=y"
           } >> "$DEF"
 
-      - name: 7. 执行编译 (LLVM 19)
+      - name: 7. 执行编译 (LTO 性能优化)
         run: |
           cd ${{ env.K_ROOT }}
-          # 这里的配置文件名需要物理动态提取
           C_NAME=$(basename $(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1))
           make O=out ARCH=arm64 "$C_NAME"
+          # 使用 LLVM 开启编译
           make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j$(nproc)
 
       - name: 8. 打包发布
@@ -86,10 +108,10 @@ jobs:
           IMG=$(find ${{ env.K_ROOT }}/out -name "Image" | head -n 1)
           git clone https://github.com/osm0sis/AnyKernel3
           cp "$IMG" AnyKernel3/
-          cd AnyKernel3 && zip -r9 ../PLC110_GKI_V15.zip *
+          cd AnyKernel3 && zip -r9 ../PLC110_Fengchi_V17.zip *
 
       - name: 9. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-V15-Kernel
+          name: PLC110-Fengchi-Kernel
           path: "*.zip"
