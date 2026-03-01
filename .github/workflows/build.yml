@@ -1,4 +1,4 @@
-name: OnePlus Ace5U (PLC110) V28-Graphite-Fast
+name: OnePlus Ace5U (PLC110) V30-Stable-Kernel
 on:
   workflow_dispatch:
 
@@ -6,7 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 极速环境准备
+      - name: 1. 环境准备 (精简克隆)
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip python-is-python3 lz4
@@ -14,28 +14,42 @@ jobs:
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 2. 【核心优化替换】Graphite & Pipe 加速
+      - name: 2. 【回退稳定版】KSUN-Next 逻辑集成
         run: |
           cd kernel-source
-          # 1. 注入 Graphite 优化参数到全局 Makefile (提升循环处理性能)
-          sed -i 's/-O2/-O2 -fgraphite-identity -floop-nest-optimize -fno-semantic-interposition -pipe/g' Makefile
+          # 1. 彻底清理旧目录并重新克隆到指定位置
+          rm -rf kernel/ksu
+          git clone --depth=1 -b dev https://github.com/rifsxd/KernelSU-Next.git kernel/ksu
           
-          # 2. 开启 1000Hz 调度与 LZ4-HC 高级压缩
-          scripts/config --file arch/arm64/configs/gki_defconfig \
-            -e CONFIG_HZ_1000 -e CONFIG_KERNEL_LZ4 -e CONFIG_LZ4_HC
-          sed -i 's/lz4c -l/lz4 -9/g' scripts/Makefile.lib
-          
-          # 3. 启用 BFQ 与 SCSI 多队列 (针对 UFS 4.0 优化)
-          scripts/config --file arch/arm64/configs/gki_defconfig \
-            -e CONFIG_IOSCHED_BFQ -e CONFIG_BFQ_GROUP_IOSCHED -e CONFIG_SCSI_MQ_DEFAULT
+          # 2. 严格检查文件是否存在，防止后续 sed 报错
+          if [ ! -f "kernel/ksu/ksu.c" ]; then
+            echo "错误：KSUN 源码未正确克隆到 kernel/ksu/ksu.c"
+            exit 1
+          fi
 
-      - name: 3. 【省电与内存】TEO 与 MGLRU 补回
+          # 3. 注入 Kconfig 与 Makefile 链接
+          sed -i '/source "drivers\/Kconfig"/a source "kernel\/ksu\/Kconfig"' drivers/Kconfig
+          echo "obj-y += ksu/" >> kernel/Makefile
+          
+          # 4. 修复 Android 15/OOS16 UID 定义
+          sed -i 's/current_uid().val/from_kuid_munged(\&init_user_ns, current_uid())/g' kernel/ksu/ksu.c || true
+          
+          # 5. 强制启用 Hybrid 模式 (针对部分插件兼容性)
+          sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/ksu/Makefile || true
+
+      - name: 3. 【优化重写】补回 TEO, MGLRU 与 LZ4-HC
         run: |
           cd kernel-source
+          # 确保所有性能与省电优化项正确写入 defconfig
           scripts/config --file arch/arm64/configs/gki_defconfig \
             -e CONFIG_CPU_IDLE_GOV_TEO -e CONFIG_WQ_POWER_EFFICIENT_DEFAULT \
             -e CONFIG_LRU_GEN -e CONFIG_LRU_GEN_ENABLED \
-            -d CONFIG_DEBUG_INFO -e CONFIG_DEBUG_INFO_REDUCED # 缩减符号表加速编译
+            -e CONFIG_IOSCHED_BFQ -e CONFIG_BFQ_GROUP_IOSCHED \
+            -e CONFIG_KERNEL_LZ4 -e CONFIG_LZ4_HC \
+            -d CONFIG_DEBUG_INFO -e CONFIG_DEBUG_INFO_REDUCED
+          
+          # 设置 LZ4 压缩等级
+          sed -i 's/lz4c -l/lz4 -9/g' scripts/Makefile.lib
 
       - name: 4. 应用 Hmbird 性能补丁
         run: |
@@ -43,42 +57,33 @@ jobs:
           wget -q https://raw.githubusercontent.com/Numbersf/Action-Build/SukiSU-Ultra/patches/hmbird_patch.patch
           patch -p1 < hmbird_patch.patch
 
-      - name: 5. KSUN-Next 混合集成 (Android 15 兼容)
-        run: |
-          cd kernel-source
-          git clone --depth=1 -b dev https://github.com/rifsxd/KernelSU-Next.git kernel/ksu
-          sed -i '/source "drivers\/Kconfig"/a source "kernel\/ksu\/Kconfig"' drivers/Kconfig
-          echo "obj-y += ksu/" >> kernel/Makefile
-          # 修复 OOS16 UID 兼容性
-          sed -i 's/current_uid().val/from_kuid_munged(\&init_user_ns, current_uid())/g' kernel/ksu/ksu.c || true
-
-      - name: 6. 极速并行编译 (禁用 LTO)
+      - name: 5. 稳定编译 (修正参数)
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          # 移除 ThinLTO 宏，改用 Graphite 运行时优化
-          scripts/config --file arch/arm64/configs/gki_defconfig -d CONFIG_LTO_CLANG_THIN
+          # 移除会导致报错的 Graphite 参数，改用稳定的 -O3
+          sed -i 's/-O2/-O3/g' Makefile
           
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
           make -j$(nproc) $MAKE_ARGS gki_defconfig
+          # 启用 Kprobes 基础宏
           scripts/config --file .config -e CONFIG_KPROBES -e CONFIG_KPROBE_EVENTS -e CONFIG_OPLUS_FEATURE_HMBIRD
           make -j$(nproc) $MAKE_ARGS V=0 Image.lz4
 
-      - name: 7. 【关键修复】AnyKernel3 分区路径硬编码
-        # 彻底解决截图 的无法确定分区报错
+      - name: 6. 【终极识别修复】AnyKernel3 分区锁死
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.lz4 AK3/
           cd AK3
-          # 强制锁定一加 Ace 5 至尊版 boot 分区
+          # 针对截图中的 omap_hsmmc.0 报错，强制指定 boot 分区路径
           sed -i 's|block=auto|block=/dev/block/by-name/boot|g' anykernel.sh
           sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           
-          zip -r9 ../OnePlus-Ace5U-V28-Graphite.zip *
+          zip -r9 ../OnePlus-Ace5U-V30-Stable.zip *
 
-      - name: 8. 上传
+      - name: 7. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: Ace5U-PLC110-V28
-          path: ./OnePlus-Ace5U-V28-Graphite.zip
+          name: Ace5U-PLC110-V30
+          path: ./OnePlus-Ace5U-V30-Stable.zip
