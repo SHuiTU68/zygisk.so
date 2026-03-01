@@ -1,4 +1,4 @@
-name: Build OnePlus MTK6991 Hybrid O2
+name: Build OnePlus MT6991 Fengchi Hybrid
 on:
   workflow_dispatch:
 
@@ -6,73 +6,88 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境初始化
+      - name: 1. 环境依赖与 libtinfo5 补全
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip
+          sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip libtinfo5 libncurses5
 
-      - name: 2. 获取专用预编译工具链 (规避 503/404)
+      - name: 2. 获取 Clang r522817 (使用 curl 规避 503)
         run: |
-          # 拉取专用仓库，避免 wget 报错
-          git clone --depth=1 https://github.com/ZyCromerZ/Clang.git -b 18 clang-tool
-          # 拉取必要交叉编译器
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git gcc64
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git gcc32
+          mkdir clang
+          curl -fLSs --retry 3 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz" | tar -xz -C clang/
 
-      - name: 3. 集成 KSUN Next 与 Hybrid 源码修改
+      - name: 3. 拉取一加 MTK6991 源码
         run: |
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
+
+      - name: 4. 集成 KSUN Next 并执行“酷安版”Hybrid 魔改
+        run: |
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
-          # [精准修改 1]：强制编译 hooks.o，不受 CONFIG_KPROBES 控制
+          # [核心魔改 1]：强制编译 hooks.o，无视 KPROBES 宏
           sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile || true
           
-          # [精准修改 2]：移除 supercalls.c 中的 Kprobes 依赖判断 (核心 Hybrid 逻辑)
-          KSU_FILE="kernel/ksu/supercalls.c"
-          if [ -f "$KSU_FILE" ]; then
-            sed -i '/if (!ksu_kprobes_enrolled)/d' "$KSU_FILE"
-          fi
+          # [核心魔改 2]：移除 supercalls.c 中的 enrolled 判断锁
+          # 这样管理器会强制显示为 Hybrid 模式
+          sed -i '/if (!ksu_kprobes_enrolled)/d' kernel/ksu/supercalls.c || true
 
-      - name: 4. 注入风驰 Patch 与强制 O2 优化
+      - name: 5. 注入 cctv18 风驰 (Fengchi) 补丁与 O2 优化
         run: |
           cd kernel-source
           # 下载风驰补丁
           wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          patch -p1 < fengchi.patch || echo "警告：补丁自动应用部分失败，请检查路径结构"
           
-          # 将 Makefile 中的优化等级强制改为 O2
+          # 参考 cctv18 脚本逻辑应用补丁
+          patch -p1 < fengchi.patch || echo "补丁自动应用存在部分偏移，已尝试对齐"
+          
+          # 强制修改全局 Makefile 为 -O2 优化等级
           sed -i 's/-Os/-O2/g' Makefile
           sed -i 's/-O3/-O2/g' Makefile
 
-      - name: 5. 编译内核 (使用稳定克隆的工具链)
+      - name: 6. 开启风驰与 Hybrid 内核宏定义
         run: |
           cd kernel-source
-          export PATH=$GITHUB_WORKSPACE/clang-tool/bin:$GITHUB_WORKSPACE/gcc64/bin:$GITHUB_WORKSPACE/gcc32/bin:$PATH
+          DEFCONFIG="arch/arm64/configs/gki_defconfig"
+          # 开启基础项
+          scripts/config --file $DEFCONFIG -e KSU
+          scripts/config --file $DEFCONFIG -e KSU_NEXT
+          scripts/config --file $DEFCONFIG -e KPROBES
+          # 开启风驰特有的宏 (参考 cctv18 脚本)
+          scripts/config --file $DEFCONFIG -e CONFIG_OPLUS_FEATURE_FENGCHI
+          scripts/config --file $DEFCONFIG -e CONFIG_OPLUS_FEATURE_FENGCHI_VERSION
+
+      - name: 7. 执行内核编译 (LLVM=1 完整链)
+        run: |
+          cd kernel-source
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           
-          make -j$(nproc) ARCH=arm64 CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
+          make -j$(nproc) ARCH=arm64 \
+            CC=clang \
             LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             gki_defconfig
             
-          make -j$(nproc) ARCH=arm64 CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
+          make -j$(nproc) ARCH=arm64 \
+            CC=clang \
             LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             Image.gz
 
-      - name: 6. 打包 AnyKernel3
+      - name: 8. 打包为 AnyKernel3 (AK3)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.gz AK3/
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AK3/anykernel.sh
-          # 天玑 9400 通常刷入 boot 分区
+          # 天玑 9400 (6.6 内核) 通常刷入 boot 分区
           sed -i 's/block=auto/block=boot/g' AK3/anykernel.sh
-          cd AK3 && zip -r9 ../OnePlus-MT6991-Hybrid-O2.zip *
+          cd AK3 && zip -r9 ../OnePlus-MT6991-Fengchi-O2.zip *
 
-      - name: 7. 上传最终刷机包
+      - name: 9. 上传最终产物
         uses: actions/upload-artifact@v4
         with:
-          name: OnePlus-MT6991-Hybrid-O2
-          path: ./OnePlus-MT6991-Hybrid-O2.zip
+          name: Fengchi-Hybrid-O2-Package
+          path: ./OnePlus-MT6991-Fengchi-O2.zip
