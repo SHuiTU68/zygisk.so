@@ -1,12 +1,11 @@
-name: PLC110_CCTV_Extreme_Port
-on:
-  workflow_dispatch:
+name: PLC110_Ultimate_Fast_Search
+on: [workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境加固
+      - name: 1. 环境准备
         run: sudo apt update && sudo apt install repo curl git python3 patch zip -y
 
       - name: 2. 同步底座 (Midas/PLC110)
@@ -14,77 +13,100 @@ jobs:
           mkdir -p workspace && cd workspace
           repo init -u https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
           repo sync -c -j$(nproc) --no-tags --no-clone-bundle
-          # 动态获取内核根目录，彻底解决 Termux 遗留的路径问题
-          echo "KERNEL_ROOT=$(find $(pwd) -name "arch" -type d | head -n 1 | xargs dirname)" >> $GITHUB_ENV
+          
+          # 动态定位 6.6 内核根目录
+          REAL_KERNEL_DIR=$(find $(pwd) -name "Makefile" | xargs grep -l "VERSION = 6" | head -n 1 | xargs dirname)
+          echo "REAL_KERNEL_DIR=$REAL_KERNEL_DIR" >> $GITHUB_ENV
 
-      - name: 3. 照搬：注入 ADIOS 调度器
+      - name: 3. 【极速方案】全分支搜寻混合钩子
         run: |
-          cd ${{ env.KERNEL_ROOT }}
-          # 按照 cctv 的移植习惯，直接克隆到 kernel/sched/adios
+          cd ${{ env.REAL_KERNEL_DIR }}
+          rm -rf drivers/kernelsu
+          
+          # 获取远程仓库所有分支列表
+          REPO_URL="https://github.com/rifsxd/KernelSU-Next"
+          echo ">>> 正在获取远程分支元数据..."
+          BRANCHES=$(git ls-remote --heads $REPO_URL | awk -F'refs/heads/' '{print $2}')
+          
+          FOUND_BRANCH=""
+          # 优先级排序：首先检查 next 分支
+          SORTED_BRANCHES="next $(echo "$BRANCHES" | grep -v "next")"
+
+          for branch in $SORTED_BRANCHES; do
+            echo "🔍 正在检查分支: $branch ..."
+            # 使用 --filter=blob:none 实现极速浅克隆探测
+            git clone -b "$branch" --depth=1 --filter=blob:none --sparse $REPO_URL drivers/kernelsu_tmp
+            
+            # 探测该分支是否包含混合钩子逻辑 (搜索 Kconfig 中的关键宏)
+            if grep -rq "HYBRID_HOOK" drivers/kernelsu_tmp/ksu 2>/dev/null; then
+              echo "✅ 在分支 [$branch] 中发现混合钩子逻辑！"
+              FOUND_BRANCH=$branch
+              mv drivers/kernelsu_tmp drivers/kernelsu
+              break
+            else
+              rm -rf drivers/kernelsu_tmp
+            fi
+          done
+
+          if [ -z "$FOUND_BRANCH" ]; then
+            echo "❌ 未能在所有分支中找到混合钩子，回退到主分支"
+            git clone --depth=1 $REPO_URL drivers/kernelsu
+          fi
+
+      - name: 4. 注入 ADIOS 与 BBG (适配 sugov_ext)
+        run: |
+          cd ${{ env.REAL_KERNEL_DIR }}
+          # 照搬 cctv 移植逻辑
           git clone --depth=1 https://github.com/firelzrd/adios kernel/sched/adios
-          
-          # 挂载 Makefile 和 Kconfig
-          echo 'obj-y += adios/' >> kernel/sched/Makefile
-          sed -i '/endmenu/i source "kernel/sched/adios/Kconfig"' kernel/sched/Kconfig
-          
-          # 针对 6.6 内核的兼容性微调 (照搬 cctv 对高版本内核的修复逻辑)
-          find kernel/sched/adios/ -name "*.c" -o -name "*.h" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g'
-
-      - name: 4. 照搬：注入 Baseband-guard (BBG)
-        run: |
-          cd ${{ env.KERNEL_ROOT }}
           git clone --depth=1 https://github.com/vc-teahouse/Baseband-guard drivers/bbg
+          
+          # 修复 1000022697 路径报错：动态查找 Kconfig 位置
+          SCHED_KCONFIG=$(find kernel/sched/ -name "Kconfig" | head -n 1)
+          SCHED_MAKEFILE=$(find kernel/sched/ -name "Makefile" | head -n 1)
+          
+          echo 'obj-y += adios/' >> "$SCHED_MAKEFILE"
+          sed -i '/endmenu/i source "kernel/sched/adios/Kconfig"' "$SCHED_KCONFIG"
           echo 'obj-y += bbg/' >> drivers/Makefile
           echo 'source "drivers/bbg/Kconfig"' >> drivers/Kconfig
-
-      - name: 5. 照搬：KSUN-Next 混合钩子
-        run: |
-          cd ${{ env.KERNEL_ROOT }}
-          rm -rf drivers/kernelsu
-          # 强制拉取包含混合钩子逻辑的 next 分支
-          git clone -b next --depth=1 https://github.com/rifsxd/KernelSU-Next drivers/kernelsu
-
-      - name: 6. 极致还原：性能补丁与 sugov_ext 宏配置
-        run: |
-          cd ${{ env.KERNEL_ROOT }}
-          # 应用风驰 (Fengchi) 补丁
-          curl -L https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch -o fengchi.patch
-          patch -p1 < fengchi.patch || echo "⚠️ 部分补丁冲突已跳过"
           
-          # 完全照搬 cctv 对 oplus_mt6991_defconfig 的修改逻辑
-          DEFCONFIG="arch/arm64/configs/oplus_mt6991_defconfig"
+          # 6.6 内核兼容性头文件修复
+          find kernel/sched/adios/ -name "*.[ch]" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g'
+
+      - name: 5. 极致还原：性能补丁与 sugov_ext 宏配置
+        run: |
+          cd ${{ env.REAL_KERNEL_DIR }}
+          curl -L https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch -o fengchi.patch
+          patch -p1 < fengchi.patch || echo "补丁部分跳过"
+          
+          # 寻找对应的 defconfig
+          DEFCONFIG=$(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1)
           {
-            # 性能核心
-            echo "CONFIG_FENGCHI_OPTIMIZE=y"
-            echo "CONFIG_ADIOS_SCHED=y"
-            # 混合钩子
             echo "CONFIG_KSU_NEXT_HYBRID_HOOK=y"
             echo "CONFIG_KSU_NEXT_KPROBE_REPLACE=y"
-            # 基带守护
+            echo "CONFIG_ADIOS_SCHED=y"
             echo "CONFIG_BASEBAND_GUARD=y"
-            # 针对 sugov_ext 的 MTK 专属优化宏
+            echo "CONFIG_FENGCHI_OPTIMIZE=y"
             echo "CONFIG_CPU_FREQ_GOV_SUGOV_EXT=y"
             echo "CONFIG_MTK_SCHED_BOOST=y"
-            echo "CONFIG_MTK_CPU_QUOTA_ADAPTIVE=y"
           } >> "$DEFCONFIG"
 
-      - name: 7. 执行 LLVM 编译 (照搬 cctv 工具链参数)
+      - name: 6. 执行 LLVM 编译
         run: |
-          cd ${{ env.KERNEL_ROOT }}
-          make O=out ARCH=arm64 oplus_mt6991_defconfig
-          # 使用 LLVM=1 LLVM_IAS=1 确保与一加 13/Ace5 系列原厂编译环境对齐
+          cd ${{ env.REAL_KERNEL_DIR }}
+          make O=out ARCH=arm64 $(basename $(find arch/arm64/configs/ -name "oplus_mt6991_defconfig"))
           make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j$(nproc)
 
-      - name: 8. 打包 AnyKernel3
+      - name: 7. 打包产物
         run: |
+          IMAGE_PATH=$(find . -name "Image" -path "*/out/*" | head -n 1)
           git clone https://github.com/osm0sis/AnyKernel3
-          cp ${{ env.KERNEL_ROOT }}/out/arch/arm64/boot/Image AnyKernel3/
+          cp "$IMAGE_PATH" AnyKernel3/
           cd AnyKernel3
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          zip -r9 ../PLC110_CCTV_Extreme.zip *
+          zip -r9 ../PLC110_Extreme_$(date +%m%d).zip *
 
-      - name: 9. 上传
+      - name: 8. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-CCTV-Kernel
-          path: PLC110_CCTV_Extreme.zip
+          name: PLC110-Extreme-Kernel
+          path: "*.zip"
