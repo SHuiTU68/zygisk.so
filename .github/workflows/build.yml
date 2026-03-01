@@ -1,4 +1,4 @@
-name: Build-PLC110-Pershoot-Ultimate
+name: Build-PLC110-Pershoot-Full-Optimized
 on:
   workflow_dispatch:
 
@@ -7,7 +7,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 方案一：通过禁用 Kprobes 触发 Hybrid | 方案二：源码级硬改强制 Hybrid
+        # 方案一：禁用 Kprobes 实现 Hybrid | 方案二：按截图硬改源码实现 Hybrid
         hook_type: [disable_kprobes, modify_source]
     runs-on: ubuntu-latest
     steps:
@@ -18,7 +18,7 @@ jobs:
           remove-dotnet: 'true'
           remove-android: 'true'
 
-      - name: Install Build Dependencies
+      - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git libelf-dev libssl-dev lz4 liblz4-tool python3-pip zip tar curl sed uuid-dev wget pahole
@@ -26,46 +26,40 @@ jobs:
 
       - name: Sync Source & Pershoot KSUN
         run: |
-          # 1. 拉取一加 Ace 5 至尊版 (PLC110) 6.6 内核源码
+          # 1. 拉取 PLC110 6.6 内核源码
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991 -b oneplus/mtk6991 kernel_src
           
-          # 2. 拉取 AOSP Clang r522830 (支持 O2 性能优化)
+          # 2. 拉取 AOSP Clang r522830
           mkdir clang
           curl -LSs https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522830.tar.gz | tar -xzC clang
           
-          # 3. 核心步骤：调用 pershoot 分支实现 Hybrid Hook
+          # 3. 关键：拉取 pershoot 仓库以实现 Hybrid Hook
           cd kernel_src
           curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/main/kernel/setup.sh" | bash -s main
 
-      - name: Advanced Optimization & Hybrid Logic
+      - name: Advanced Optimization & Fengchi Patch
         run: |
           cd kernel_src
-          
-          # 1. 部署 LZ4 1.10.0 并清理 SUSFS
-          git clone https://github.com/lz4/lz4.git -b v1.10.0 lz4_tool
-          cd lz4_tool && make -j$(nproc) && sudo make install && cd ..
-          find . -name "*susfs*" -exec rm -rf {} +
-
-          # 2. 注入风驰游戏补丁 (性能调度优化)
+          # 1. 注入风驰游戏补丁
           curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          patch -p1 < fengchi.patch || echo "Patch applied with warnings"
+          patch -p1 < fengchi.patch || echo "Patch skip some lines"
 
-          # 3. 强制 O2 优化 (提升内核运行速度)
+          # 2. 移除 SUSFS 并强制 O2 优化
+          find . -name "*susfs*" -exec rm -rf {} +
           sed -i 's/CONFIG_CC_OPTIMIZE_FOR_SIZE=y/CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y/g' arch/arm64/configs/gki_defconfig
           sed -i 's/-Os/-O2/g' Makefile
 
-          # 4. 实现混合钩子切换逻辑
+          # 3. 混合钩子方案实现
           if [ "${{ matrix.hook_type }}" == "disable_kprobes" ]; then
-            # 方案一：在编译阶段关闭内核 Kprobes
             echo "CONFIG_KPROBES=n" >> arch/arm64/configs/gki_defconfig
             echo "CONFIG_KPROBE_EVENTS=n" >> arch/arm64/configs/gki_defconfig
           else
-            # 方案二：源码硬改，删除 KPROBES 判断语句 (会导致 avc 欺骗失效)
+            # 方案二：源码级删除 KPROBES 判断 (会导致 avc 欺骗失效)
             sed -i '/CONFIG_KPROBES/d' kernel/Kbuild
             sed -i '/IS_ENABLED(CONFIG_KPROBES)/d' kernel/supercalls.c
           fi
 
-      - name: Build Kernel (Image Only)
+      - name: Build Kernel
         run: |
           cd kernel_src
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
@@ -78,7 +72,7 @@ jobs:
           cd AK3
           rm -rf .git README.md
           
-          # 写入同步截图的刷写逻辑
+          # 写入同步截图的刷写脚本
           cat <<EOF > anykernel.sh
 ### AnyKernel3 Ramdisk Mod Script
 properties() { '
@@ -99,7 +93,7 @@ no_magisk_check=1;
 
 . tools/ak3-core.sh;
 
-# 核心：内核版本兼容性检测
+# 内核版本检测逻辑
 kernel_version=\$(cat /proc/version | awk -F '-' '{print \$1}' | awk '{print \$3}')
 case \$kernel_version in
   5.1*) ksu_supported=true ;;
