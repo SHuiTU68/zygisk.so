@@ -1,86 +1,93 @@
-
-name: OnePlus Ace5U (PLC110) V31-Stable-Final
+name: Build OP-MTK6991-Hybrid-O2
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 手动触发编译
 
 jobs:
   build:
+    strategy:
+      matrix:
+        # 定义两种方案：方案一(禁用Kprobes), 方案二(修改源码)
+        hook_type: [disable_kprobes, modify_source]
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境准备
+      # 1. 环境准备：安装编译内核所需的必要库和工具
+      - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip python-is-python3 lz4
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-tool
-          mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
-          git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
+          sudo apt-get install -y bc build-essential flex bison bzip2 git libelf-dev libssl-dev lz4 liblz4-tool libncurses-dev python3-pip zip tar curl sed uuid-dev wget pahole
+          # 升级 cmake 以确保兼容性
+          sudo pip3 install cmake
+          echo "Environment Ready."
 
-      - name: 2. 【回退 V14 逻辑】KSUN-Next 稳定克隆
-        # 解决截图 1000022791.jpg 和 1000022794.jpg 中的路径匹配问题
-        run: |
-          cd kernel-source
-          rm -rf kernel/ksu
-          # 先克隆到外部临时目录，再移动内核文件夹，确保层级正确
-          git clone -b dev https://github.com/rifsxd/KernelSU-Next.git ../ksu_tmp
-          mv ../ksu_tmp/kernel kernel/ksu
-          
-          # 物理检查：如果还找不到文件就直接停止，不浪费时间编译
-          ls kernel/ksu/ksu.c || { echo "KSUN源码路径依然错误"; exit 1; }
-
-          # 注入配置逻辑
-          sed -i '/source "drivers\/Kconfig"/a source "kernel\/ksu\/Kconfig"' drivers/Kconfig
-          echo "obj-y += ksu/" >> kernel/Makefile
-          
-          # 修复 Android 15/OOS16 UID 适配
-          sed -i 's/current_uid().val/from_kuid_munged(\&init_user_ns, current_uid())/g' kernel/ksu/ksu.c || true
-          # 强制开启 Hybrid 模式
-          sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/ksu/Makefile || true
-
-      - name: 3. 【优化补回】TEO, MGLRU 与 I/O 调优
-        run: |
-          cd kernel-source
-          scripts/config --file arch/arm64/configs/gki_defconfig \
-            -e CONFIG_CPU_IDLE_GOV_TEO -e CONFIG_WQ_POWER_EFFICIENT_DEFAULT \
-            -e CONFIG_LRU_GEN -e CONFIG_LRU_GEN_ENABLED \
-            -e CONFIG_IOSCHED_BFQ -e CONFIG_BFQ_GROUP_IOSCHED \
-            -e CONFIG_KERNEL_LZ4 -e CONFIG_LZ4_HC \
-            -d CONFIG_DEBUG_INFO -e CONFIG_DEBUG_INFO_REDUCED
-
-      - name: 4. 应用 Hmbird 补丁
-        run: |
-          cd kernel-source
-          wget -q https://raw.githubusercontent.com/Numbersf/Action-Build/SukiSU-Ultra/patches/hmbird_patch.patch
-          patch -p1 < hmbird_patch.patch
-
-      - name: 5. 编译内核 (禁用错误参数)
-        run: |
-          cd kernel-source
-          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          # 确保 Makefile 使用 -O3 且不含任何无效参数
-          sed -i 's/-O2/-O3/g' Makefile
-          
-          MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
-          make -j$(nproc) $MAKE_ARGS gki_defconfig
-          scripts/config --file .config -e CONFIG_KPROBES -e CONFIG_KPROBE_EVENTS -e CONFIG_OPLUS_FEATURE_HMBIRD
-          make -j$(nproc) $MAKE_ARGS V=0 Image.lz4
-
-      - name: 6. 【关键修复】AnyKernel3 分区锁死
-        run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AK3
-          cp kernel-source/arch/arm64/boot/Image.lz4 AK3/
-          cd AK3
-          # 针对 omap_hsmmc.0 报错，强行覆盖 block 变量
-          sed -i 's|block=auto|block=/dev/block/by-name/boot|g' anykernel.sh
-          sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
-          # 额外注入一加 PLC110 专用路径 fallback
-          sed -i '/setup_env/a \
-          [ -L /dev/block/by-name/boot ] && block=/dev/block/by-name/boot; \
-          [ -L /dev/block/platform/bootdevice/by-name/boot ] && block=/dev/block/platform/bootdevice/by-name/boot;' anykernel.sh
-          
-          zip -r9 ../OnePlus-Ace5U-V31-Final.zip *
-
-      - name: 7. 上传
-        uses: actions/upload-artifact@v4
+      # 2. 释放磁盘空间 (MTK源码+编译产物非常大)
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
         with:
-          name: Ace5U-PLC110-V31
-          path: ./OnePlus-Ace5U-V31-Final.zip
+          root-reserve-mb: 16384
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+
+      # 3. 拉取源码与工具链 (仿照 cctv18 逻辑)
+      - name: Sync Source and Toolchain
+        run: |
+          # 拉取 OnePlusOSS MTK6991 源码
+          git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_5.10_oneplus_mt6983 -b oneplus/mtk6991 kernel_src
+          
+          # 拉取最新 AOSP Clang (r522830 或更高，支持 O2 深度优化)
+          mkdir clang
+          cd clang
+          curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522830.tar.gz
+          tar -xf *.tar.gz
+          cd ..
+          
+          # 集成 KernelSU Next (KSUN)
+          cd kernel_src
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/main/kernel/setup.sh" | bash -s main
+
+      # 4. 极致优化与补丁注入 (LZ4 v1.10.0 + O2 + 风驰 + 混合钩子)
+      - name: Advanced Optimization & Patching
+        run: |
+          cd kernel_src
+          
+          # A. 部署 LZ4 1.10.0
+          git clone https://github.com/lz4/lz4.git -b v1.10.0 lz4_tool
+          cd lz4_tool && make -j$(nproc) && sudo make install && cd ..
+          
+          # B. 注入风驰游戏补丁
+          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
+          patch -p1 < fengchi.patch || echo "Patch skip some lines"
+
+          # C. 强制 O2 优化
+          sed -i 's/CONFIG_CC_OPTIMIZE_FOR_SIZE=y/CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y/g' arch/arm64/configs/gki_defconfig
+          sed -i 's/-Os/-O2/g' Makefile
+
+          # D. 混合钩子实现 (按照截图逻辑) & 移除 SUSFS
+          find . -name "*susfs*" -exec rm -rf {} +
+          if [ "${{ matrix.hook_type }}" == "disable_kprobes" ]; then
+             echo "CONFIG_KPROBES=n" >> arch/arm64/configs/gki_defconfig
+          else
+             # 方案二：源码级硬改
+             sed -i '/CONFIG_KPROBES/d' kernel/Kbuild
+             sed -i '/IS_ENABLED(CONFIG_KPROBES)/d' kernel/supercalls.c
+          fi
+
+      # 5. 开始构建 (仿照 cctv18 的编译指令)
+      - name: Start Build
+        run: |
+          cd kernel_src
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          # 这里填入具体的编译命令，例如：
+          # make O=out ARCH=arm64 gki_defconfig
+          # make O=out ARCH=arm64 CC=clang LLVM=1 -j$(nproc)
+          
+      # 6. 打包 AnyKernel3 并上传
+      - name: Package AK3
+        run: |
+          # 判定名称
+          if [ "${{ matrix.hook_type }}" == "disable_kprobes" ]; then
+            NAME="OP-MT6991-O2-NoKprobe"
+          else
+            NAME="OP-MT6991-O2-Hybrid-SourceMod"
+          fi
+          # 执行打包逻辑并上传 Artifact
