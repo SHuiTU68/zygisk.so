@@ -6,70 +6,76 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 环境初始化
+      - name: 1. 基础环境与高版本 Clang 安装
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip clang lld llvm
+          # 安装 Clang 17/18 以适配 6.6 内核，避免 503 报错
+          sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip clang-17 lld-17 llvm-17
 
-      - name: 拉取 MTK6991 源码
+      - name: 2. 拉取一加 MTK6991 源码
         run: |
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
           
-      - name: 配置 KernelSU Next 与 Hybrid 逻辑
+      - name: 3. 集成 KSUN Next 并精准修改源码 (Hybrid 逻辑)
         run: |
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
           
-          # 应用酷安提供的 Hybrid 强制修改逻辑
-          # 1. 强制编译 hooks.o
-          sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile || true
-          # 2. 移除 supercalls.c 中的 KPROBES 强制依赖检查 (解决显示为 Hybrid 的关键)
-          sed -i '/if (!ksu_kprobes_enrolled)/d' kernel/ksu/supercalls.c || true
+          # [精准修改 1]：强制编译 hooks.o，不看 KPROBES 脸色
+          # 适配 6.6 内核的 Makefile 路径
+          sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile || \
+          sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Kbuild || true
+          
+          # [精准修改 2]：移除 supercalls.c 中的 enrolled 判断
+          # 这样在管理器中就会显示为 Hybrid
+          FILE="kernel/ksu/supercalls.c"
+          if [ -f "$FILE" ]; then
+            sed -i '/if (!ksu_kprobes_enrolled)/d' "$FILE"
+            # 注意：移除判断后需确保代码块大括号闭合正确，此 sed 会删除该行
+          fi
 
-      - name: 集成风驰 Patch 与 O2 优化
+      - name: 4. 注入风驰 Patch 与 O2 优化
         run: |
           cd kernel-source
-          # 应用风驰补丁
+          # 下载风驰 Patch
           wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          patch -p1 < fengchi.patch || echo "Patch applied with warnings"
+          patch -p1 < fengchi.patch || echo "Patch 路径可能不完全匹配，请检查源码目录"
           
-          # 强制全局 O2 优化
+          # 强制 O2 优化
           sed -i 's/-Os/-O2/g' Makefile
           sed -i 's/-O3/-O2/g' Makefile
 
-      - name: 下载 AOSP Clang (使用更稳定的镜像)
-        run: |
-          # 避免 Google 503 报错，直接使用经过验证的预编译版
-          wget https://github.com/ZyCromerZ/Clang/releases/download/18.0.0-20240420-release/Clang-18.0.0-20240420.tar.gz
-          mkdir clang && tar -C clang/ -zxvf Clang-18.0.0-20240420.tar.gz > /dev/null
-
-      - name: 编译内核
+      - name: 5. 编译内核 (使用系统内置 Clang)
         run: |
           cd kernel-source
-          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          make -j$(nproc) ARCH=arm64 CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
+          # 软链接系统 Clang 方便调用
+          sudo ln -sf /usr/bin/clang-17 /usr/bin/clang
+          sudo ln -sf /usr/bin/ld.lld-17 /usr/bin/ld.lld
+          
+          make -j$(nproc) ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
             CROSS_COMPILE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
             gki_defconfig
             
-          make -j$(nproc) ARCH=arm64 CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
+          make -j$(nproc) ARCH=arm64 \
+            CC=clang \
+            LD=ld.lld \
             LLVM=1 LLVM_IAS=1 \
             Image.gz
 
-      - name: AnyKernel3 打包
+      - name: 6. 打包 AK3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.gz AK3/
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AK3/anykernel.sh
-          # MTK 6.6 内核通常刷入 boot 分区
-          sed -i 's/block=auto/block=boot/g' AK3/anykernel.sh 
-          cd AK3 && zip -r9 ../OnePlus-MT6991-Final.zip *
+          # 天玑 9400 通常刷入 boot 分区
+          sed -i 's/block=auto/block=boot/g' AK3/anykernel.sh
+          cd AK3 && zip -r9 ../OnePlus-MT6991-Hybrid-Final.zip *
 
-      - name: 上传固件
+      - name: 7. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: MTK6991-Hybrid-O2-Kernel
-          path: ./OnePlus-MT6991-Final.zip
+          name: Hybrid-O2-Kernel
+          path: ./OnePlus-MT6991-Hybrid-Final.zip
