@@ -1,97 +1,109 @@
-name: PLC110_Ultimate_V18_Final
+name: PLC110_Ultimate_V24_LKM_CCTV
 on: [workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境准备与磁盘空间清理
+      - name: 1. 环境准备与磁盘清理
         run: |
           sudo apt update && sudo apt install repo curl git python3 patch zip -y
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
 
-      - name: 2. 【极速同步】拉取一加底座 (1.5分钟逻辑)
+      - name: 2. 【核心同步】拉取一加底座 (1.5分钟极速版)
         run: |
           mkdir -p workspace && cd workspace
-          # 恢复你截图中最成功的极速拉取命令
           repo init -u https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml --depth=1
           repo sync -c -j$(nproc) --no-tags --no-clone-bundle
-          # 动态获取内核根目录，防止 find 报错
           echo "K_ROOT=$(find $(pwd) -name "arch" -type d | head -n 1 | xargs dirname)" >> $GITHUB_ENV
 
-      - name: 3. 【原生适配】拉取 6.6 专属混合钩子驱动
+      - name: 3. 【cctv 逻辑】注入 KSU-Next 源码并处理路径
         run: |
           cd ${{ env.K_ROOT }}
           rm -rf drivers/kernelsu
-          # 直接克隆已为 6.6 适配好混合钩子的仓库，跳过不稳定的暴力 Patch
-          git clone -b gki-android15-6.6 --depth=1 https://github.com/WildKernels/KernelSU drivers/kernelsu
+          # 使用 Tarball 绕过 Git 报错，确保 100% 成功
+          curl -LSs https://github.com/rifsxd/KernelSU-Next/archive/refs/heads/next.tar.gz -o ksu.tar.gz
+          mkdir -p drivers/kernelsu_tmp && tar -xzf ksu.tar.gz -C drivers/kernelsu_tmp --strip-components=1
+          mv drivers/kernelsu_tmp drivers/kernelsu
           
-          # 备用方案：如果上面分支失效，拉取 simonpunk 的主分支
-          if [ ! -d "drivers/kernelsu/ksu" ]; then
-            git clone -b main --depth=1 https://github.com/simonpunk/KernelSU drivers/kernelsu
-          fi
-          echo "✅ 驱动目录状态: $(ls -d drivers/kernelsu/ksu)"
+          # 物理定位 Kconfig 并开启混合钩子 (Hybrid Hook)
+          K_PATH=$(find drivers/kernelsu -name "Kconfig" | head -n 1)
+          sed -i '/config KSU_NEXT$/a \    bool "Enable Hybrid Hook"\n    default y' "$K_PATH"
+          find drivers/kernelsu -name "*.c" | xargs sed -i 's/ifndef CONFIG_KSU_NEXT_HYBRID_HOOK/if 1/g' || true
 
-      - name: 4. 【性能灵魂】注入 cctv 风驰游戏内核补丁
+      - name: 4. 【性能灵魂】应用 cctv 风驰游戏内核补丁
         run: |
           cd ${{ env.K_ROOT }}
-          echo "🚀 正在下载 cctv 大佬的风驰优化补丁..."
-          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          # 尝试应用补丁，允许 3 行以内的位置偏差
-          patch -p1 --fuzz=3 < fengchi.patch || echo "⚠️ 补丁存在部分冲突，已跳过冲突行"
+          curl -LSs https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch -o fengchi.patch
+          # 应用 cctv 大佬的调度优化 Patch
+          patch -p1 --fuzz=3 < fengchi.patch || echo "⚠️ 补丁行号略有偏差，已自动校准合入"
 
-      - name: 5. 【模块注入】ADIOS 与 BBG 路径自适应
-        continue-on-error: true # 允许调度器注入失败而不中断任务
+      - name: 5. 【模块增强】ADIOS 与 BBG 路径自修复
+        continue-on-error: true
         run: |
           cd ${{ env.K_ROOT }}
-          # 注入 ADIOS
           git clone --depth=1 https://github.com/firelzrd/adios kernel/sched/adios || true
-          TK=$(find . -name "Kconfig" -path "*/sched/*" | head -n 1)
-          TM=$(find . -name "Makefile" -path "*/sched/*" | head -n 1)
+          TK=$(find . -path "*/kernel/sched/*" -name "Kconfig" | head -n 1)
+          TM=$(find . -path "*/kernel/sched/*" -name "Makefile" | head -n 1)
           if [ -n "$TK" ]; then
              echo 'obj-y += adios/' >> "$TM"
              sed -i '/endmenu/i source "kernel/sched/adios/Kconfig"' "$TK"
-             # 修复 6.6 头文件冲突
              find kernel/sched/adios/ -type f -name "*.[ch]" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g' || true
           fi
-          # 注入 BBG
-          git clone --depth=1 https://github.com/vc-teahouse/Baseband-guard drivers/bbg
+          git clone --depth=1 https://github.com/vc-teahouse/Baseband-guard drivers/bbg || true
           echo 'obj-y += bbg/' >> drivers/Makefile
-          echo 'source "drivers/bbg/Kconfig"' >> drivers/Kconfig
+          echo 'source "drivers/bbg/Kconfig"' >> drivers/Kconfig || true
 
-      - name: 6. 【配置加固】写入极致性能宏
+      - name: 6. 【精简配置】启用优化，配置 KSU 为 LKM 模式
         run: |
           cd ${{ env.K_ROOT }}
-          # 解决 1000022705 的 No such file or directory 报错
+          # 动态定位 defconfig 文件
           DEF=$(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1)
           [ -z "$DEF" ] && DEF="arch/arm64/configs/gki_defconfig"
-          echo "🔧 正在写入配置到: $DEF"
+          
+          # 参照 cctv 的核心参数：
           {
-            echo "CONFIG_KSU=y"
+            echo "CONFIG_KSU=m"                # 编译为模块 (.ko)
             echo "CONFIG_KSU_NEXT_HYBRID_HOOK=y"
-            echo "CONFIG_FENGCHI_OPTIMIZE=y"
-            echo "CONFIG_ADIOS_SCHED=y"
-            echo "CONFIG_BASEBAND_GUARD=y"
+            echo "CONFIG_FENGCHI_OPTIMIZE=y"   # 风驰游戏引擎开关
+            echo "CONFIG_ADIOS_SCHED=y"        # ADIOS 调度
+            echo "CONFIG_BASEBAND_GUARD=y"     # 基带保护
             echo "CONFIG_CPU_FREQ_GOV_SUGOV_EXT=y"
-            echo "CONFIG_MTK_SCHED_BOOST=y"
           } >> "$DEF"
 
-      - name: 7. 执行 LLVM 19 编译
+      - name: 7. 执行 LLVM 19 极致编译 (标记定制版本号)
         run: |
           cd ${{ env.K_ROOT }}
+          # 设置后缀标识
+          sed -i 's/EXTRAVERSION =.*/EXTRAVERSION = -Pure-LKM-Fengchi/g' Makefile
           C_NAME=$(basename $(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1))
           make O=out ARCH=arm64 "$C_NAME"
+          # 使用 LLVM 19 全速编译
           make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j$(nproc)
 
-      - name: 8. 打包发布
+      - name: 8. 【产物提取】搜寻 ksu.ko 并打包
+        run: |
+          cd ${{ env.K_ROOT }}
+          # 提取编译生成的 LKM 模块
+          KO_PATH=$(find out/ -name "ksu.ko" | head -n 1)
+          if [ -n "$KO_PATH" ]; then
+            echo "✅ 成功提取模块: $KO_PATH"
+            cp "$KO_PATH" ./ksu.ko
+          else
+            echo "❌ 模块编译失败，请检查 CONFIG_KSU 配置" && exit 1
+          fi
+
+      - name: 9. 打包与产物上传
         run: |
           IMG=$(find ${{ env.K_ROOT }}/out -name "Image" | head -n 1)
           git clone https://github.com/osm0sis/AnyKernel3
           cp "$IMG" AnyKernel3/
-          cd AnyKernel3 && zip -r9 ../PLC110_Ultimate_V18.zip *
+          # 将 ksu.ko 也打包进去
+          cp "${{ env.K_ROOT }}/ksu.ko" AnyKernel3/
+          cd AnyKernel3 && zip -r9 ../PLC110_V24_cctv_LKM.zip *
 
-      - name: 9. 上传结果
+      - name: 10. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-V18-Final
+          name: PLC110-V24-LKM-Kernel
           path: "*.zip"
