@@ -1,90 +1,58 @@
-name: PLC110_Full_Fix_V14
-on: [workflow_dispatch]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 1. 环境准备
-        run: sudo apt update && sudo apt install repo curl git python3 patch zip -y
-
-      - name: 2. 【核心接回】极速拉取一加官方底座
-        run: |
-          mkdir -p workspace && cd workspace
-          # 恢复之前运行成功的极速拉取命令
-          repo init -u https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml --depth=1
-          repo sync -c -j$(nproc) --no-tags --no-clone-bundle
-          # 准确定位内核根目录
-          K_ROOT=$(find $(pwd) -name "arch" -type d | head -n 1 | xargs dirname)
-          echo "K_ROOT=$K_ROOT" >> $GITHUB_ENV
-
-      - name: 3. 【全域搜寻】混合钩子 + 暴力补丁保底
+      - name: 3. 【全域搜寻】混合钩子探测与分支自适应补丁
         run: |
           cd ${{ env.K_ROOT }}
           rm -rf drivers/kernelsu
           GKI_LIST=("https://github.com/simonpunk/KernelSU" "https://github.com/rifsxd/KernelSU-Next" "https://github.com/WildKernels/KernelSU")
           FOUND=false
+          # 第一阶段：寻找原生带 HYBRID_HOOK 的分支
           for repo in "${GKI_LIST[@]}"; do
-            for branch in next hybrid-next gki-android14-6.6; do
+            for branch in next main hybrid-next gki-android14-6.6; do
               if curl -sL "${repo}/raw/${branch}/ksu/Kconfig" | grep -q "HYBRID_HOOK"; then
-                echo "🎯 匹配成功: $repo 分支: $branch"
+                echo "🎯 匹配成功原生混合钩子: $repo 分支: $branch"
                 git clone -b "$branch" --depth=1 "$repo" drivers/kernelsu && FOUND=true && break 2
               fi
             done
           done
+
+          # 第二阶段：保底方案 - 自动探测分支并实施暴力补丁
           if [ "$FOUND" = false ]; then
-            echo "⚠️ 未发现分支，启动暴力补丁..."
-            git clone -b next --depth=1 https://github.com/rifsxd/KernelSU-Next drivers/kernelsu
-            # 物理织入混合钩子宏定义
-            sed -i '/config KSU_NEXT$/a \    bool "Enable Hybrid Hook"\n    default y' drivers/kernelsu/ksu/Kconfig
-            find drivers/kernelsu/ -name "*.c" | xargs sed -i 's/ifndef CONFIG_KSU_NEXT_HYBRID_HOOK/if 1 \/\/ Forced/g'
+            echo "⚠️ 未发现原生分支，启动自适应暴力补丁..."
+            REPO_URL="https://github.com/rifsxd/KernelSU-Next"
+            # 自动探测有效分支：先试 next，不行试 main，再不行试 master
+            for b in next main master; do
+              git clone -b "$b" --depth=1 "$REPO_URL" drivers/kernelsu && FOUND_B=true && break
+            done
+            
+            if [ "$FOUND_B" = true ]; then
+              echo "✅ 已成功克隆基础代码，开始物理织入混合钩子..."
+              # 物理修改 Kconfig 增加开关
+              sed -i '/config KSU_NEXT$/a \    bool "Enable Hybrid Hook"\n    default y' drivers/kernelsu/ksu/Kconfig
+              # 暴力强制开启混合逻辑
+              find drivers/kernelsu/ -name "*.c" | xargs sed -i 's/ifndef CONFIG_KSU_NEXT_HYBRID_HOOK/if 1 \/\/ Forced/g'
+            else
+              echo "❌ 严重错误：无法拉取任何基础驱动分支" && exit 1
+            fi
           fi
 
-      - name: 4. 【拆分步骤】注入 ADIOS 调度器
-        continue-on-error: true  # 允许调度器注入失败而不中断流程
+      - name: 4. 【独立模块】注入 ADIOS 调度器 (允许失败)
+        continue-on-error: true # 即使 sed 报错也不影响整体编译
         run: |
           cd ${{ env.K_ROOT }}
           git clone --depth=1 https://github.com/firelzrd/adios kernel/sched/adios || true
-          # 使用 V12 验证过的路径定位逻辑
+          # 动态路径搜索，解决 1000022711 报错
           TARGET_K=$(find . -name "Kconfig" -path "*/sched/*" | head -n 1)
           TARGET_M=$(find . -name "Makefile" -path "*/sched/*" | head -n 1)
           if [ -n "$TARGET_K" ]; then
+             echo "✅ 发现调度器配置路径: $TARGET_K"
              echo 'obj-y += adios/' >> "$TARGET_M"
              sed -i '/endmenu/i source "kernel/sched/adios/Kconfig"' "$TARGET_K"
-             [ -d "kernel/sched/adios" ] && find kernel/sched/adios/ -type f -name "*.[ch]" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g'
+             # 6.6 头文件适配
+             find kernel/sched/adios/ -type f -name "*.[ch]" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g' || true
           fi
 
-      - name: 5. 【拆分步骤】注入 Baseband-guard (BBG)
+      - name: 5. 【独立模块】注入 Baseband-guard (BBG)
         run: |
           cd ${{ env.K_ROOT }}
           git clone --depth=1 https://github.com/vc-teahouse/Baseband-guard drivers/bbg
           echo 'obj-y += bbg/' >> drivers/Makefile
           echo 'source "drivers/bbg/Kconfig"' >> drivers/Kconfig
-
-      - name: 6. 【物理锁定】写入 defconfig 配置宏
-        run: |
-          cd ${{ env.K_ROOT }}
-          DEF=$(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1)
-          [ -z "$DEF" ] && DEF="arch/arm64/configs/gki_defconfig"
-          echo "🔧 修改配置文件: $DEF"
-          {
-            echo "CONFIG_KSU_NEXT_HYBRID_HOOK=y"
-            echo "CONFIG_KSU_NEXT_KPROBE_REPLACE=y"
-            echo "CONFIG_ADIOS_SCHED=y"
-            echo "CONFIG_BASEBAND_GUARD=y"
-          } >> "$DEF"
-
-      - name: 7. 执行编译 (LLVM 19)
-        run: |
-          cd ${{ env.K_ROOT }}
-          CONF_NAME=$(basename $(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1))
-          make O=out ARCH=arm64 "$CONF_NAME"
-          make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j$(nproc)
-
-      - name: 8. 打包与上传
-        run: |
-          cd ${{ env.K_ROOT }}
-          IMAGE=$(find out/ -name Image | head -n 1)
-          git clone https://github.com/osm0sis/AnyKernel3
-          cp "$IMAGE" AnyKernel3/
-          cd AnyKernel3 && zip -r9 ../PLC110_GKI_V14.zip *
