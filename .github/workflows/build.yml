@@ -1,4 +1,4 @@
-name: OnePlus Ace5U (PLC110) V22-Integrated-Pro
+name: OnePlus Ace5U (PLC110) V23-Final-Integrated
 on:
   workflow_dispatch:
 
@@ -6,7 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境准备与源码获取
+      - name: 1. 环境准备
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip ipset python-is-python3 lz4
@@ -14,79 +14,79 @@ jobs:
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 2. 【搜寻优化】集成 Adios 调度器 (6.6 适配)
+      - name: 2. 【核心】移植 Adios 调度器 (指定仓库版)
         run: |
           cd kernel-source/block
-          wget https://raw.githubusercontent.com/mizuno-shun/android_kernel_xiaomi_chime/main/block/adios-iosched.c
+          # 使用你提供的新仓库地址
+          git clone https://github.com/firelzrd/adios.git adios_temp
+          cp adios_temp/adios-iosched.c .
+          rm -rf adios_temp
           echo "obj-y += adios-iosched.o" >> Makefile
           sed -i '/menu "IO Schedulers"/a config IOSCHED_ADIOS\n\tbool "Adios I/O scheduler"\n\tdefault y' Kconfig
 
       - name: 3. 【深度集成】LTO + LZ4-HC + 省电调优
         run: |
           cd kernel-source
-          # 1. 强制启用 LZ4-HC 并优化压缩权重
+          # 1. 强制启用 LZ4-HC (最高等级 9)
           scripts/config --file arch/arm64/configs/gki_defconfig -e CONFIG_KERNEL_LZ4 -e CONFIG_LZ4_HC
           sed -i 's/lz4c -l/lz4 -9/g' scripts/Makefile.lib
           
-          # 2. 开启 ThinLTO 全局链接优化
+          # 2. 开启 ThinLTO 全局链接优化 (提升执行效率)
           scripts/config --file arch/arm64/configs/gki_defconfig -e CONFIG_LTO_CLANG_THIN
           
-          # 3. 集成 TEO (Tuned Energy-Optimized) 调度与省电宏
+          # 3. 集成 TEO (Tuned Energy-Optimized) 与 内存管理优化 (MGLRU)
           scripts/config --file arch/arm64/configs/gki_defconfig \
             -e CONFIG_CPU_IDLE_GOV_TEO \
             -e CONFIG_WQ_POWER_EFFICIENT_DEFAULT \
-            -e CONFIG_ENERGY_MODEL \
             -e CONFIG_LRU_GEN -e CONFIG_LRU_GEN_ENABLED
 
-      - name: 4. 应用 Numbersf Hmbird 补丁 (SCX)
+      - name: 4. 应用 Hmbird 补丁
         run: |
           cd kernel-source
           wget https://raw.githubusercontent.com/Numbersf/Action-Build/SukiSU-Ultra/patches/hmbird_patch.patch
           patch -p1 < hmbird_patch.patch
 
-      - name: 5. KSUN 集成 (恢复你认可的稳定逻辑)
+      - name: 5. KSUN 集成 (修复 A15/OOS16 路径)
         run: |
           cd kernel-source
           git clone -b dev https://github.com/rifsxd/KernelSU-Next.git kernel/ksu
           sed -i '/source "drivers\/Kconfig"/a source "kernel\/ksu\/Kconfig"' drivers/Kconfig
           echo "obj-y += ksu/" >> kernel/Makefile
-          # 修复 OOS16/Android 15 UID 兼容性
+          # 修复 UID 定义兼容性
           sed -i 's/current_uid().val/from_kuid_munged(\&init_user_ns, current_uid())/g' kernel/ksu/ksu.c || true
 
-      - name: 6. 编译内核 (O2 + ThinLTO)
+      - name: 6. 编译内核 (坚持 O2 + ThinLTO)
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          # 保持 O2 稳健性，通过 LTO 实现深度优化
+          # 确保 Makefile 中不含 -O3，全面使用 -O2
           sed -i 's/-O3/-O2/g' Makefile
           
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 LTO=thin CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
           make -j$(nproc) $MAKE_ARGS gki_defconfig
-          # 开启 Kprobes, Hmbird, Adios 宏
           scripts/config --file .config -e CONFIG_KPROBES -e CONFIG_KPROBE_EVENTS -e CONFIG_OPLUS_FEATURE_HMBIRD -e CONFIG_IOSCHED_ADIOS
           make -j$(nproc) $MAKE_ARGS V=1 Image.lz4
 
-      - name: 7. 【终极修复】AnyKernel3 物理路径锁死
-        # 针对截图 的无法识别分区问题
+      - name: 7. 【终极修复】AnyKernel3 强力刷入逻辑
+        # 针对截图 的无法识别分区错误
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.lz4 AK3/
           cd AK3
-          # 1. 暴力锁死一加 PLC110 逻辑分区
+          # 彻底移除 block=auto，避免脚本去尝试错误的 omap 路径
           sed -i 's|block=auto|block=/dev/block/by-name/boot|g' anykernel.sh
-          # 2. 强制 A/B 槽位与禁用校验
           sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # 3. 针对天玑 9400 平台的路径补强逻辑
+          # 注入一加 PLC110 专用的 A/B 分区物理路径补丁
           sed -i '/setup_env/a \
           [ -L /dev/block/by-name/boot ] && block=/dev/block/by-name/boot; \
           [ -L /dev/block/platform/bootdevice/by-name/boot ] && block=/dev/block/platform/bootdevice/by-name/boot; \
           [ -L /dev/block/mapper/boot ] && block=/dev/block/mapper/boot;' anykernel.sh
           
-          zip -r9 ../OnePlus-Ace5U-V22-Integrated.zip *
+          zip -r9 ../OnePlus-Ace5U-V23-Final.zip *
 
       - name: 8. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: Ace5U-PLC110-V22
-          path: ./OnePlus-Ace5U-V22-Integrated.zip
+          name: Ace5U-PLC110-V23
+          path: ./OnePlus-Ace5U-V23-Final.zip
