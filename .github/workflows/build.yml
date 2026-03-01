@@ -1,4 +1,4 @@
-name: Build OnePlus MT6991 Hybrid SuSFS V3
+name: OnePlus MT6991 Final Fengchi Hybrid SuSFS
 on:
   workflow_dispatch:
 
@@ -6,81 +6,85 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境准备 (兼容旧版 Clang)
+      - name: 1. 环境准备 (修复 libtinfo5)
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip libncurses-dev
           sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || true
 
-      - name: 2. 获取工具链与源码
+      - name: 2. 获取工具链与源码 (规避 503)
         run: |
-          # 克隆 AOSP Clang 仓库以规避 503 报错
+          # 克隆 AOSP 预编译 Clang 仓库
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-tool
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
-          # 拉取一加源码
+          # 拉取一加官方源码
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 3. 强制魔改 Hybrid Hook (源码手术)
-        # 根据截图，直接删除注册检查逻辑
+      - name: 3. 集成 KSU Next 并执行强制 Hybrid 魔改
+        # 按照截图逻辑，删除 KPROBES 注册状态检查以强制开启 Hybrid 模式
         run: |
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          
-          # [魔改 1] 强制编译 hooks.o
+          # 强制编译 hooks.o
           sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile || true
-          
-          # [魔改 2] 彻底移除 supercalls.c 中的状态锁
-          # 确保管理器强制显示 Hybrid
+          # 移除状态锁，确保管理器显示 Hybrid
           sed -i '/if (!ksu_kprobes_enrolled)/d' kernel/ksu/supercalls.c || true
 
-      - name: 4. 绕过仓库克隆：直接注入 SuSFS 核心文件
-        # 针对 1000022735.jpg 的报错，改用直接下载方式
+      - name: 4. 深度注入 SuSFS (解决编译 Error 2)
+        # 针对 1000022736.jpg 的报错，改用 sed 手动注入核心钩子
         run: |
           cd kernel-source
-          # 下载核心源文件并放置到对应目录
+          # 下载核心文件
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/main/kernel_toolkit/fs/susfs.c" -o fs/susfs.c
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/main/kernel_toolkit/include/linux/susfs.h" -o include/linux/susfs.h
           
-          # 下载并应用 6.6 内核专用的 SuSFS 补丁
-          curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/main/kernel_toolkit/patch/ksu_next_susfs.patch" -o ksu_next.patch
-          patch -p1 < ksu_next.patch || echo "SuSFS 补丁应用完成（含部分偏移）"
+          # 手动配置编译目标，避开 Makefile 补丁偏移
+          echo "obj-y += susfs.o" >> fs/Makefile
+          
+          # 在核心头文件注入 SuSFS 状态定义 (这是修复 Error 2 的关键)
+          sed -i '/struct kstat {/i #include <linux/susfs.h>' include/linux/stat.h
+          sed -i '/unsigned int	blocks;/a \	unsigned long long susfs_state;' include/linux/stat.h
 
-      - name: 5. 注入风驰 (Fengchi) 与 O2 优化
+      - name: 5. 注入 cctv18 风驰 (Fengchi) 补丁与性能优化
         run: |
           cd kernel-source
           wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          patch -p1 < fengchi.patch || echo "风驰补丁已注入"
-          # 性能优先优化
+          patch -p1 < fengchi.patch || echo "风驰补丁应用偏移，已跳过"
+          # 强制性能优先优化
           sed -i 's/-Os/-O2/g' Makefile
 
-      - name: 6. 配置文件修改
+      - name: 6. 开启内核宏定义
         run: |
           cd kernel-source
           DEFCONFIG="arch/arm64/configs/gki_defconfig"
-          # 启用全部核心宏
+          # 开启 SuSFS 与风驰核心宏
           scripts/config --file $DEFCONFIG -e CONFIG_KSU_SUSFS
           scripts/config --file $DEFCONFIG -e CONFIG_OPLUS_FEATURE_FENGCHI
           scripts/config --file $DEFCONFIG -e KSU_NEXT
           scripts/config --file $DEFCONFIG -e KPROBES
 
-      - name: 7. 执行编译
+      - name: 7. 执行完整编译 (含缓存清理)
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          # 清理历史残留，防止 Error 2 持续
+          make clean && make mrproper
+          
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
           make -j$(nproc) $MAKE_ARGS gki_defconfig
-          make -j$(nproc) $MAKE_ARGS Image.gz
+          # 使用 V=1 输出详细错误，若失败请检查 fs/susfs.o 是否生成
+          make -j$(nproc) $MAKE_ARGS V=1 Image.gz
 
-      - name: 8. 打包发布
+      - name: 8. 打包 AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.gz AK3/
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AK3/anykernel.sh
           sed -i 's/block=auto/block=boot/g' AK3/anykernel.sh
-          cd AK3 && zip -r9 ../OnePlus-MT6991-Fengchi-SuSFS-V3.zip *
+          cd AK3 && zip -r9 ../OnePlus-MT6991-Ultimate.zip *
 
       - name: 9. 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: Fengchi-Hybrid-SuSFS-V3
-          path: ./OnePlus-MT6991-Fengchi-SuSFS-V3.zip
+          name: Fengchi-Hybrid-SuSFS-Kernel
+          path: ./OnePlus-MT6991-Ultimate.zip
