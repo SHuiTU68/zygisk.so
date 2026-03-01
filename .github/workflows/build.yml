@@ -1,113 +1,90 @@
-name: PLC110_Ultimate_GKI_V12
+name: PLC110_Full_Fix_V14
 on: [workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境加固
+      - name: 1. 环境准备
         run: sudo apt update && sudo apt install repo curl git python3 patch zip -y
 
-      - name: 2. 【极速同步】跳过冗余，仅核心底座
+      - name: 2. 【核心接回】极速拉取一加官方底座
         run: |
           mkdir -p workspace && cd workspace
-          # 强制开启 depth=1 确保 1000022706 的秒级速度
+          # 恢复之前运行成功的极速拉取命令
           repo init -u https://github.com/WildKernels/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml --depth=1
           repo sync -c -j$(nproc) --no-tags --no-clone-bundle
-          # 极致路径定位：查找包含 arch 文件夹的内核根部
-          echo "K_ROOT=$(find $(pwd) -name "arch" -type d | head -n 1 | xargs dirname)" >> $GITHUB_ENV
+          # 准确定位内核根目录
+          K_ROOT=$(find $(pwd) -name "arch" -type d | head -n 1 | xargs dirname)
+          echo "K_ROOT=$K_ROOT" >> $GITHUB_ENV
 
-      - name: 3. 【彻底搜寻】全网 GKI 混合钩子探测
+      - name: 3. 【全域搜寻】混合钩子 + 暴力补丁保底
         run: |
           cd ${{ env.K_ROOT }}
           rm -rf drivers/kernelsu
-          
-          # 包含 simonpunk (酷安大佬) 及其他混合钩子源
-          GKI_LIST=(
-            "https://github.com/simonpunk/KernelSU"
-            "https://github.com/rifsxd/KernelSU-Next"
-            "https://github.com/WildKernels/KernelSU"
-            "https://github.com/tiann/KernelSU"
-            "https://github.com/rsuntk/KernelSU"
-            "https://github.com/idsc-dev/KernelSU"
-          )
-
+          GKI_LIST=("https://github.com/simonpunk/KernelSU" "https://github.com/rifsxd/KernelSU-Next" "https://github.com/WildKernels/KernelSU")
           FOUND=false
           for repo in "${GKI_LIST[@]}"; do
-            echo "🌐 探测仓库: $repo"
-            # 针对 6.6 内核，重点探测 hybrid 相关分支
-            for branch in next main master gki-android14-6.6 hybrid-next; do
-              # 关键：检查宏定义是否存在
-              if curl -sL "${repo}/raw/${branch}/ksu/Kconfig" | grep -qE "HYBRID_HOOK|CONFIG_KSU_NEXT"; then
-                echo "🎯 发现混合钩子！源: $repo 分支: $branch"
-                git clone -b "$branch" --depth=1 "$repo" drivers/kernelsu
-                FOUND=true && break 2
+            for branch in next hybrid-next gki-android14-6.6; do
+              if curl -sL "${repo}/raw/${branch}/ksu/Kconfig" | grep -q "HYBRID_HOOK"; then
+                echo "🎯 匹配成功: $repo 分支: $branch"
+                git clone -b "$branch" --depth=1 "$repo" drivers/kernelsu && FOUND=true && break 2
               fi
             done
           done
+          if [ "$FOUND" = false ]; then
+            echo "⚠️ 未发现分支，启动暴力补丁..."
+            git clone -b next --depth=1 https://github.com/rifsxd/KernelSU-Next drivers/kernelsu
+            # 物理织入混合钩子宏定义
+            sed -i '/config KSU_NEXT$/a \    bool "Enable Hybrid Hook"\n    default y' drivers/kernelsu/ksu/Kconfig
+            find drivers/kernelsu/ -name "*.c" | xargs sed -i 's/ifndef CONFIG_KSU_NEXT_HYBRID_HOOK/if 1 \/\/ Forced/g'
+          fi
 
-      - name: 4. 【解决 sed 报错】ADIOS 物理注入
+      - name: 4. 【拆分步骤】注入 ADIOS 调度器
+        continue-on-error: true  # 允许调度器注入失败而不中断流程
         run: |
           cd ${{ env.K_ROOT }}
           git clone --depth=1 https://github.com/firelzrd/adios kernel/sched/adios || true
-          
-          # 彻底解决 1000022709 的 "no input files" 问题
-          # 不再猜测路径，直接通过文件名全局搜寻并获取第一个匹配结果
-          TARGET_KCONFIG=$(find . -name "Kconfig" -path "*/sched/*" | head -n 1)
-          TARGET_MAKEFILE=$(find . -name "Makefile" -path "*/sched/*" | head -n 1)
-          
-          if [ -n "$TARGET_KCONFIG" ]; then
-             echo "✅ 注入路径: $TARGET_KCONFIG"
-             echo 'obj-y += adios/' >> "$TARGET_MAKEFILE"
-             # 确保在 endmenu 之前插入，避免语法错误
-             sed -i '/endmenu/i source "kernel/sched/adios/Kconfig"' "$TARGET_KCONFIG"
-             # 修复 6.6 头文件冲突
-             find kernel/sched/adios/ -name "*.[ch]" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g'
+          # 使用 V12 验证过的路径定位逻辑
+          TARGET_K=$(find . -name "Kconfig" -path "*/sched/*" | head -n 1)
+          TARGET_M=$(find . -name "Makefile" -path "*/sched/*" | head -n 1)
+          if [ -n "$TARGET_K" ]; then
+             echo 'obj-y += adios/' >> "$TARGET_M"
+             sed -i '/endmenu/i source "kernel/sched/adios/Kconfig"' "$TARGET_K"
+             [ -d "kernel/sched/adios" ] && find kernel/sched/adios/ -type f -name "*.[ch]" | xargs sed -i 's/<linux\/sched\/rt.h>/<linux\/sched\/types.h>/g'
           fi
 
-      - name: 5. 【照搬 cctv】注入 BBG 与 性能补丁
+      - name: 5. 【拆分步骤】注入 Baseband-guard (BBG)
         run: |
           cd ${{ env.K_ROOT }}
           git clone --depth=1 https://github.com/vc-teahouse/Baseband-guard drivers/bbg
           echo 'obj-y += bbg/' >> drivers/Makefile
           echo 'source "drivers/bbg/Kconfig"' >> drivers/Kconfig
-          # 应用风驰 (Fengchi) 优化
-          curl -L https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch -o f.patch
-          patch -p1 < f.patch || echo "补丁跳过"
 
-      - name: 6. 【物理锁定】开启 cctv 优化宏
+      - name: 6. 【物理锁定】写入 defconfig 配置宏
         run: |
           cd ${{ env.K_ROOT }}
-          # 针对 1000022705 的空路径修复
           DEF=$(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1)
           [ -z "$DEF" ] && DEF="arch/arm64/configs/gki_defconfig"
-          
           echo "🔧 修改配置文件: $DEF"
           {
             echo "CONFIG_KSU_NEXT_HYBRID_HOOK=y"
             echo "CONFIG_KSU_NEXT_KPROBE_REPLACE=y"
             echo "CONFIG_ADIOS_SCHED=y"
             echo "CONFIG_BASEBAND_GUARD=y"
-            echo "CONFIG_FENGCHI_OPTIMIZE=y"
-            echo "CONFIG_CPU_FREQ_GOV_SUGOV_EXT=y"
           } >> "$DEF"
 
-      - name: 7. 执行编译
+      - name: 7. 执行编译 (LLVM 19)
         run: |
           cd ${{ env.K_ROOT }}
           CONF_NAME=$(basename $(find arch/arm64/configs/ -name "oplus_mt6991_defconfig" | head -n 1))
           make O=out ARCH=arm64 "$CONF_NAME"
           make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j$(nproc)
 
-      - name: 8. 打包发布
+      - name: 8. 打包与上传
         run: |
-          IMAGE=$(find . -name "Image" -path "*/out/*" | head -n 1)
+          cd ${{ env.K_ROOT }}
+          IMAGE=$(find out/ -name Image | head -n 1)
           git clone https://github.com/osm0sis/AnyKernel3
           cp "$IMAGE" AnyKernel3/
-          cd AnyKernel3 && zip -r9 ../PLC110_GKI_V12.zip *
-
-      - name: 9. 上传
-        uses: actions/upload-artifact@v4
-        with:
-          name: PLC110-V12-Kernel
-          path: "*.zip"
+          cd AnyKernel3 && zip -r9 ../PLC110_GKI_V14.zip *
