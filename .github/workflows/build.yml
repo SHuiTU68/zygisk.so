@@ -1,4 +1,4 @@
-name: OnePlus MT6991 Wild-Ultimate V4 (Luyanci)
+name: OnePlus MT6991 Wild-Ultimate V5
 on:
   workflow_dispatch:
 
@@ -6,68 +6,67 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境全量补全 (修复 libtinfo5)
+      - name: 1. 环境准备
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip libncurses-dev ipset python-is-python3
           sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || true
           sudo ln -s /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5 || true
 
-      - name: 2. 获取源码与工具链 (AOSP Clang)
+      - name: 2. 获取源码与工具链
         run: |
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-tool
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 3. 集成 KSU Next 并配置 Hybrid (混合模式)
-        run: |
-          cd kernel-source
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          # 强制编译 hooks.o 以支持 Kprobes
-          sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile || true
-          # 允许 Hybrid 状态强制显示
-          sed -i 's/if (!ksu_kprobes_enrolled)/if (0)/g' kernel/ksu/supercalls.c || true
-
-      - name: 4. 强制注入风驰 (Fengchi) 性能补丁
-        # 绝对不跳过补丁，确保天玑 9400 性能释放
+      - name: 3. 【第一步】强制应用风驰 (Fengchi) 补丁
+        # 必须在所有 sed 逻辑之前应用补丁，防止上下文冲突
         run: |
           cd kernel-source
           wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          patch -p1 < fengchi.patch || { echo "风驰补丁冲突，请检查日志"; exit 1; }
+          patch -p1 < fengchi.patch || { echo "风驰补丁冲突，请检查 build.log"; exit 1; }
 
-      - name: 5. 集成 luyanci-susfs4oki (深度适配版)
-        # 针对 OKI 平台优化的 SuSFS 集成
+      - name: 4. 【第二步】集成 KSU Next 并配置 Hybrid
         run: |
           cd kernel-source
-          # 下载 luyanci 的核心文件 (专门修复了 OKI 内核的 stat.h 冲突)
+          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          # 修复 Hybrid 依赖，强制编译 hooks
+          sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile || true
+          # 解锁状态显示
+          sed -i 's/if (!ksu_kprobes_enrolled)/if (0)/g' kernel/ksu/supercalls.c || true
+
+      - name: 5. 【第三步】集成 luyanci-susfs4oki (适配 OKI 平台)
+        # 移除之前所有的 Wild 注入，改用隔离性更好的方案
+        run: |
+          cd kernel-source
           curl -LSs "https://github.com/luyanci/susfs4oki/raw/main/fs/susfs.c" -o fs/susfs.c
           curl -LSs "https://github.com/luyanci/susfs4oki/raw/main/include/linux/susfs.h" -o include/linux/susfs.h
           
           # 注册 Makefile
           sed -i '/obj-y += devpts\//a obj-y += susfs.o' fs/Makefile
           
-          # [核心修复] 使用更安全的隔离注入，防止 Error 2 导出错误
+          # 修复 stat.h (增加内核空间保护，防止 headers_install 报错)
           sed -i '/unsigned int	blocks;/a \	unsigned long long susfs_state;' include/linux/stat.h
           sed -i '1i #ifdef __KERNEL__\n#include <linux/susfs.h>\n#endif' include/linux/stat.h
           
-          # 注入 VFS 钩子 (适配 Android 15/MTK 逻辑)
+          # 注入 VFS 钩子
           sed -i '/int vfs_statx(int dfd/i struct kstat stat;\nunsigned long long susfs_state = 0;' fs/open.c || true
 
-      - name: 6. 开启 Wild 核心特性 (Hmbird/IPSET/TTL)
+      - name: 6. 开启内核配置 (TTL/IPSET/Hmbird)
         run: |
           cd kernel-source
           DEFCONFIG="arch/arm64/configs/gki_defconfig"
-          # 开启 Kprobes 基础支持 (Hybrid 核心)
+          # 开启 Kprobes 以支撑混合模式
           scripts/config --file $DEFCONFIG -e CONFIG_KPROBES
           scripts/config --file $DEFCONFIG -e CONFIG_KPROBE_EVENTS
-          # 开启其他功能
+          # 开启 Wild 系列特性
           scripts/config --file $DEFCONFIG -e CONFIG_NETFILTER_XT_TARGET_HL
           scripts/config --file $DEFCONFIG -e CONFIG_IP_SET
           scripts/config --file $DEFCONFIG -e CONFIG_OPLUS_FEATURE_HMBIRD
-          # 强制 O2 优化
+          # 强制性能级别
           sed -i 's/-Os/-O2/g' Makefile
 
-      - name: 7. 执行全量编译 (含 build.log)
+      - name: 7. 执行全量编译
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
@@ -76,12 +75,11 @@ jobs:
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
           make -j$(nproc) $MAKE_ARGS gki_defconfig
           
-          # 确保 SuSFS 宏启用
+          # 强制写入 SuSFS 宏
           scripts/config --file .config -e CONFIG_KSU_SUSFS
           scripts/config --file .config -e CONFIG_KSU_SUSFS_SUS_PATH
           scripts/config --file .config -e CONFIG_KSU_SUSFS_SUS_MOUNT
           
-          # 记录日志，无论成败
           make -j$(nproc) $MAKE_ARGS V=1 Image.gz 2>&1 | tee ../build.log || exit 1
 
       - name: 8. 打包 AnyKernel3
@@ -93,11 +91,11 @@ jobs:
           sed -i 's/block=auto/block=boot/g' AK3/anykernel.sh
           cd AK3 && zip -r9 ../OnePlus-MT6991-Wild-Ultimate.zip *
 
-      - name: 9. 自动上传产物与日志
+      - name: 9. 自动上传日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Build-Result-Luyanci
+          name: Build-Result-V5
           path: |
             ./OnePlus-MT6991-Wild-Ultimate.zip
             ./build.log
