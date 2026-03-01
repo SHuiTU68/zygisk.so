@@ -6,23 +6,24 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境初始化与依赖修复
-        # 解决截图 1000022730 中的 libtinfo5 定位失败问题
+      - name: 1. 环境加固 (修复 ncurses5/tinfo5 与 Python)
+        # 针对 1000022731.jpg 和 1000022732.jpg 中的包丢失和 404 错误进行修复
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip libncurses-dev ipset
-          # 针对 Ubuntu 24.04 的 Clang 运行库兼容性处理
+          # 增加 python-is-python3 以确保内核脚本兼容性
+          sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip libncurses-dev ipset python-is-python3
+          # 建立软链接以欺骗需要旧版本库的 Clang 工具链
           sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || true
+          sudo ln -s /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5 || true
 
       - name: 2. 获取 Wild 推荐工具链与内核源码
-        # 参考 1000022729 报错，弃用不稳定的分支拉取，改用 AOSP 官方仓库
         run: |
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-tool
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 3. 集成 KSU Next 并魔改强制 Hybrid
-        # 按照 1000022723 方案，删除 KPROBES 检查逻辑以强制开启 Hybrid 模式
+      - name: 3. 集成 KSU Next 并强制魔改 Hybrid 模式
+        # 参考 1000022723.jpg 方案，彻底移除注册检查以强制显示 Hybrid 状态
         run: |
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
@@ -30,27 +31,26 @@ jobs:
           sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile || true
           sed -i '/if (!ksu_kprobes_enrolled)/d' kernel/ksu/supercalls.c || true
 
-      - name: 4. 深度注入 Wild-SuSFS 优化补丁
-        # 修复编译 Error 2：手动对齐 Android 15 (OOS16) 的 VFS 符号
+      - name: 4. 深度注入 Wild-SuSFS 优化 (精准修复版)
+        # 针对 1000022736/1000022743 的编译错误，手动修复 Android 15 (OOS16) VFS 符号
         run: |
           cd kernel-source
-          # 下载核心 SuSFS 文件
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/main/kernel_toolkit/fs/susfs.c" -o fs/susfs.c
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/main/kernel_toolkit/include/linux/susfs.h" -o include/linux/susfs.h
           
           # [优化 A] 注册编译对象
           sed -i '/obj-y += devpts\//a obj-y += susfs.o' fs/Makefile
           
-          # [优化 B] 修复 stat 结构体定义，防止链接错误
+          # [优化 B] 修复 stat.h 核心结构体 (使用 i/a 确保位置精准)
           sed -i '/struct kstat {/i #include <linux/susfs.h>' include/linux/stat.h
           sed -i '/unsigned int	blocks;/a \	unsigned long long susfs_state;' include/linux/stat.h
           
           # [优化 C] 注入 VFS 钩子以支持路径隐藏 (Wild 仓库核心方案)
-          # 针对 fs/open.c 的 statx 调用注入初始化符号
-          sed -i '/error = vfs_statx(AT_FDCWD/i \	struct kstat stat;\n\tunsigned long long susfs_state = 0;' fs/open.c || true
+          # 使用精准匹配防止 1000022743 中的语法冲突
+          sed -i '/int vfs_statx(int dfd/i struct kstat stat;\nunsigned long long susfs_state = 0;' fs/open.c || true
 
-      - name: 5. 注入 Wild 核心特性 (调度/隐藏/IPSET)
-        # 根据 1000022741 配置：集成 hmbird, ttl, ip_set，移除 bbr
+      - name: 5. 注入 Wild 核心性能特性 (Hmbird/TTL/IPSET)
+        # 根据 1000022741.jpg 配置：集成 hmbird, ttl, ip_set，移除 bbr 网络优化
         run: |
           cd kernel-source
           # 注入风驰 (Fengchi) 与 鸿鹄 (Hmbird) 调度补丁
@@ -62,7 +62,7 @@ jobs:
           scripts/config --file $DEFCONFIG -e CONFIG_NETFILTER_XT_TARGET_HL
           scripts/config --file $DEFCONFIG -e CONFIG_IP_SET
           
-          # 强制 O2 性能级别优化
+          # 强制性能级别 O2
           sed -i 's/-Os/-O2/g' Makefile
 
       - name: 6. 开启内核宏与清理
@@ -77,15 +77,16 @@ jobs:
           scripts/config --file $DEFCONFIG -e KSU_NEXT
 
       - name: 7. 执行强制清理并整编译
-        # 使用 make mrproper 彻底解决 1000022737 中的 sub-make 残留报错
+        # 使用 make mrproper 解决 1000022737/1000022743 中的残留报错
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          # 彻底清除上次失败的缓存
           make clean && make mrproper
           
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
           make -j$(nproc) $MAKE_ARGS gki_defconfig
-          # 开启详细日志输出以监控 fs/open.o 的生成
+          # 开启 V=1 详细日志以锁定错误位置
           make -j$(nproc) $MAKE_ARGS V=1 Image.gz
 
       - name: 8. 打包发布
