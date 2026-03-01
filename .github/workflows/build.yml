@@ -1,4 +1,4 @@
-name: OnePlus MT6991 Wild-Ultimate V11 (AK3 Fix)
+name: OnePlus Ace5-Ultimate (PLC110) MT6991 Build
 on:
   workflow_dispatch:
 
@@ -6,63 +6,70 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境准备
+      - name: 1. 环境加固与源码获取
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip libncurses-dev ipset python-is-python3
-          sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || true
-
-      - name: 2. 获取源码与工具链
-        run: |
+          # 获取天玑 9400+ 对应的 Clang 工具链
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-tool
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 3. 应用 Numbersf Hmbird 补丁
+      - name: 2. 应用 Numbersf Hmbird 补丁 (SCX 注入)
+        # 截图 1000022778.jpg 显示此补丁已成功打上
         run: |
           cd kernel-source
           wget https://raw.githubusercontent.com/Numbersf/Action-Build/SukiSU-Ultra/patches/hmbird_patch.patch
-          patch -p1 < hmbird_patch.patch || { echo "PATCH_ERROR"; exit 1; }
+          patch -p1 < hmbird_patch.patch || { echo "补丁冲突"; exit 1; }
 
-      - name: 4. 集成 KernelSU-Next (强制开启 Hybrid)
+      - name: 3. 【修复】手动克隆 KSUN dev 分支
+        # 解决截图 1000022777.jpg 中 'next' 分支找不到的问题
         run: |
           cd kernel-source
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          git clone -b dev https://github.com/rifsxd/KernelSU-Next.git kernel/ksu
+          # 执行 Kconfig 与 Makefile 注入
+          sed -i '/source "drivers\/Kconfig"/a source "kernel\/ksu\/Kconfig"' drivers/Kconfig
+          sed -i '/obj-y += drivers\//a obj-y += ksu\/' kernel/Makefile
+          # 修复 Android 15/OOS16 UID 定义
           sed -i 's/current_uid().val/from_kuid_munged(\&init_user_ns, current_uid())/g' kernel/ksu/ksu.c || true
-          sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile
-          sed -i 's/if (!ksu_kprobes_enrolled)/if (0)/g' kernel/ksu/supercalls.c || true
+          # 强制开启 Hybrid 混合模式
+          sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/ksu/Makefile || true
 
-      - name: 5. 内核编译
+      - name: 4. 执行全量编译 (MT6991)
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          make clean && make mrproper
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
           make -j$(nproc) $MAKE_ARGS gki_defconfig
+          # 开启 Hmbird 与 Kprobes 宏
           scripts/config --file .config -e CONFIG_KPROBES -e CONFIG_KPROBE_EVENTS -e CONFIG_OPLUS_FEATURE_HMBIRD
+          # 强制 O2 性能级别
+          sed -i 's/-Os/-O2/g' Makefile
           make -j$(nproc) $MAKE_ARGS V=1 Image.gz 2>&1 | tee ../build.log || exit 1
 
-      - name: 6. 【重点】AnyKernel3 深度适配刷写修复
+      - name: 5. 【核心修复】AnyKernel3 强制路径适配 (PLC110)
+        # 解决截图 1000022773.jpg 识别路径失败的问题
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.gz AK3/
-          
           cd AK3
-          # 修改 anykernel.sh 适配一加 MTK 平台
+          # 1. 关闭设备校验
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i 's/block=auto/block=boot/g' anykernel.sh
+          # 2. 强制指定 PLC110 的 boot 物理路径，防止 AK3 乱找
+          sed -i 's|block=auto|block=/dev/block/by-name/boot|g' anykernel.sh
+          # 3. 强制开启 A/B 分区支持
           sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
-          # 添加对 OOS16 动态分区的潜在支持描述
+          # 4. 写入 PLC110 专属代号
           sed -i '/device.name1=/d' anykernel.sh
-          sed -i '/do.devicecheck=0/a device.name1=oneplus13\ndevice.name2=oneplus13pro\ndevice.name3=OP5971\ndevice.name4=OP5B81' anykernel.sh
+          sed -i '/do.devicecheck=0/a device.name1=PLC110\ndevice.name2=oneplus_ace_5_ultimate' anykernel.sh
           
-          zip -r9 ../OnePlus-MT6991-Hmbird-Numbersf.zip *
+          zip -r9 ../OnePlus-Ace5U-Ultimate.zip *
 
-      - name: 7. 上传结果
+      - name: 6. 上传产物
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: AK3-Fix-Build
+          name: Ace5U-PLC110-Result
           path: |
-            ./OnePlus-MT6991-Hmbird-Numbersf.zip
+            ./OnePlus-Ace5U-Ultimate.zip
             ./build.log
