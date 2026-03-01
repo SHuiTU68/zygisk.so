@@ -1,4 +1,4 @@
-name: OnePlus MT6991 Wild-Ultimate With Log
+name: OnePlus MT6991 Wild-Ultimate V2
 on:
   workflow_dispatch:
 
@@ -6,57 +6,56 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境加固 (修复 ncurses5/tinfo5)
-        # 解决 1000022731.jpg 和 1000022732.jpg 中的环境缺失问题
+      - name: 1. 环境加固
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip libncurses-dev ipset python-is-python3
           sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || true
           sudo ln -s /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5 || true
 
-      - name: 2. 获取工具链与内核源码
+      - name: 2. 获取源码与工具链
         run: |
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-tool
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 3. 集成 KSU Next 并强制 Hybrid
-        # 参考 1000022723.jpg 逻辑，移除状态锁
+      - name: 3. KSU Next 深度集成 (Hybrid 强制开启)
         run: |
           cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          # 移除编译锁
           sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile || true
           sed -i '/if (!ksu_kprobes_enrolled)/d' kernel/ksu/supercalls.c || true
 
-      - name: 4. 深度注入 Wild-SuSFS (头文件安全隔离)
-        # 解决 1000022744.jpg 中的导出错误
+      - name: 4. SuSFS 深度注入 (无损修复版)
+        # 针对 build.log 中的 headers_install 错误进行重新设计
         run: |
           cd kernel-source
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/main/kernel_toolkit/fs/susfs.c" -o fs/susfs.c
           curl -LSs "https://gitlab.com/simonpunk/susfs4ksu/-/raw/main/kernel_toolkit/include/linux/susfs.h" -o include/linux/susfs.h
           
+          # 注册 fs/Makefile
           sed -i '/obj-y += devpts\//a obj-y += susfs.o' fs/Makefile
           
-          # 安全插入变量，并用内核空间宏包裹
-          sed -i '/unsigned int	blocks;/a \	unsigned long long susfs_state;' include/linux/stat.h
-          sed -i '1i #ifdef __KERNEL__\n#include <linux/susfs.h>\n#endif' include/linux/stat.h
-          
-          # 注入 VFS 钩子
+          # 【核心修复】不在 include/linux/stat.h 中直接插入
+          # 而是直接在 fs/open.c 引用处手动声明，彻底绕过 UAPI 导出错误
+          sed -i '/int vfs_statx(int dfd/i #include <linux/susfs.h>' fs/open.c
           sed -i '/int vfs_statx(int dfd/i struct kstat stat;\nunsigned long long susfs_state = 0;' fs/open.c || true
 
-      - name: 5. 注入 Wild 核心特性 (Hmbird/TTL/IPSET)
-        # 对标 Wild 配置：集成 hmbird, ttl, ip_set
+      - name: 5. 集成 Wild 特性补丁 (Hmbird/TTL)
         run: |
           cd kernel-source
           wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          patch -p1 < fengchi.patch || echo "调度补丁已应用"
+          patch -p1 < fengchi.patch || echo "补丁跳过"
           
           DEFCONFIG="arch/arm64/configs/gki_defconfig"
+          # 开启 TTL 隐藏和 IPSET
           scripts/config --file $DEFCONFIG -e CONFIG_NETFILTER_XT_TARGET_HL
           scripts/config --file $DEFCONFIG -e CONFIG_IP_SET
+          # 开启性能优化
           sed -i 's/-Os/-O2/g' Makefile
 
-      - name: 6. 开启内核配置宏
+      - name: 6. 开启内核配置
         run: |
           cd kernel-source
           DEFCONFIG="arch/arm64/configs/gki_defconfig"
@@ -66,20 +65,19 @@ jobs:
           scripts/config --file $DEFCONFIG -e CONFIG_OPLUS_FEATURE_HMBIRD
           scripts/config --file $DEFCONFIG -e KSU_NEXT
 
-      - name: 7. 执行编译 (含实时日志重定向)
-        # 使用 2>&1 | tee 捕捉所有标准输出和错误输出
+      - name: 7. 执行全量编译
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          # 彻底清理历史残留，解决 Error 2
           make clean && make mrproper
           
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
           make -j$(nproc) $MAKE_ARGS gki_defconfig
-          
-          # 核心：将编译过程记录到 build.log
+          # 记录日志
           make -j$(nproc) $MAKE_ARGS V=1 Image.gz 2>&1 | tee ../build.log || exit 1
 
-      - name: 8. 上传编译产物 (成功时)
+      - name: 8. 打包 AnyKernel3
         if: success()
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
@@ -88,12 +86,11 @@ jobs:
           sed -i 's/block=auto/block=boot/g' AK3/anykernel.sh
           cd AK3 && zip -r9 ../OnePlus-MT6991-Wild.zip *
 
-      - name: 9. 自动上传日志/结果
-        # 无论成功还是失败，都会上传日志供诊断
+      - name: 9. 自动上传产物与日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Build-Output-and-Log
+          name: Build-Result
           path: |
             ./OnePlus-MT6991-Wild.zip
             ./build.log
