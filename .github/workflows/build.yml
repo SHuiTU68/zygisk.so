@@ -1,4 +1,5 @@
-name: OnePlus Ace5U (PLC110) V30-Stable-Kernel
+
+name: OnePlus Ace5U (PLC110) V31-Stable-Final
 on:
   workflow_dispatch:
 
@@ -6,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境准备 (精简克隆)
+      - name: 1. 环境准备
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip python-is-python3 lz4
@@ -14,76 +15,72 @@ jobs:
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 2. 【回退稳定版】KSUN-Next 逻辑集成
+      - name: 2. 【回退 V14 逻辑】KSUN-Next 稳定克隆
+        # 解决截图 1000022791.jpg 和 1000022794.jpg 中的路径匹配问题
         run: |
           cd kernel-source
-          # 1. 彻底清理旧目录并重新克隆到指定位置
           rm -rf kernel/ksu
-          git clone --depth=1 -b dev https://github.com/rifsxd/KernelSU-Next.git kernel/ksu
+          # 先克隆到外部临时目录，再移动内核文件夹，确保层级正确
+          git clone -b dev https://github.com/rifsxd/KernelSU-Next.git ../ksu_tmp
+          mv ../ksu_tmp/kernel kernel/ksu
           
-          # 2. 严格检查文件是否存在，防止后续 sed 报错
-          if [ ! -f "kernel/ksu/ksu.c" ]; then
-            echo "错误：KSUN 源码未正确克隆到 kernel/ksu/ksu.c"
-            exit 1
-          fi
+          # 物理检查：如果还找不到文件就直接停止，不浪费时间编译
+          ls kernel/ksu/ksu.c || { echo "KSUN源码路径依然错误"; exit 1; }
 
-          # 3. 注入 Kconfig 与 Makefile 链接
+          # 注入配置逻辑
           sed -i '/source "drivers\/Kconfig"/a source "kernel\/ksu\/Kconfig"' drivers/Kconfig
           echo "obj-y += ksu/" >> kernel/Makefile
           
-          # 4. 修复 Android 15/OOS16 UID 定义
+          # 修复 Android 15/OOS16 UID 适配
           sed -i 's/current_uid().val/from_kuid_munged(\&init_user_ns, current_uid())/g' kernel/ksu/ksu.c || true
-          
-          # 5. 强制启用 Hybrid 模式 (针对部分插件兼容性)
+          # 强制开启 Hybrid 模式
           sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/ksu/Makefile || true
 
-      - name: 3. 【优化重写】补回 TEO, MGLRU 与 LZ4-HC
+      - name: 3. 【优化补回】TEO, MGLRU 与 I/O 调优
         run: |
           cd kernel-source
-          # 确保所有性能与省电优化项正确写入 defconfig
           scripts/config --file arch/arm64/configs/gki_defconfig \
             -e CONFIG_CPU_IDLE_GOV_TEO -e CONFIG_WQ_POWER_EFFICIENT_DEFAULT \
             -e CONFIG_LRU_GEN -e CONFIG_LRU_GEN_ENABLED \
             -e CONFIG_IOSCHED_BFQ -e CONFIG_BFQ_GROUP_IOSCHED \
             -e CONFIG_KERNEL_LZ4 -e CONFIG_LZ4_HC \
             -d CONFIG_DEBUG_INFO -e CONFIG_DEBUG_INFO_REDUCED
-          
-          # 设置 LZ4 压缩等级
-          sed -i 's/lz4c -l/lz4 -9/g' scripts/Makefile.lib
 
-      - name: 4. 应用 Hmbird 性能补丁
+      - name: 4. 应用 Hmbird 补丁
         run: |
           cd kernel-source
           wget -q https://raw.githubusercontent.com/Numbersf/Action-Build/SukiSU-Ultra/patches/hmbird_patch.patch
           patch -p1 < hmbird_patch.patch
 
-      - name: 5. 稳定编译 (修正参数)
+      - name: 5. 编译内核 (禁用错误参数)
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          # 移除会导致报错的 Graphite 参数，改用稳定的 -O3
+          # 确保 Makefile 使用 -O3 且不含任何无效参数
           sed -i 's/-O2/-O3/g' Makefile
           
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
           make -j$(nproc) $MAKE_ARGS gki_defconfig
-          # 启用 Kprobes 基础宏
           scripts/config --file .config -e CONFIG_KPROBES -e CONFIG_KPROBE_EVENTS -e CONFIG_OPLUS_FEATURE_HMBIRD
           make -j$(nproc) $MAKE_ARGS V=0 Image.lz4
 
-      - name: 6. 【终极识别修复】AnyKernel3 分区锁死
+      - name: 6. 【关键修复】AnyKernel3 分区锁死
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.lz4 AK3/
           cd AK3
-          # 针对截图中的 omap_hsmmc.0 报错，强制指定 boot 分区路径
+          # 针对 omap_hsmmc.0 报错，强行覆盖 block 变量
           sed -i 's|block=auto|block=/dev/block/by-name/boot|g' anykernel.sh
           sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          # 额外注入一加 PLC110 专用路径 fallback
+          sed -i '/setup_env/a \
+          [ -L /dev/block/by-name/boot ] && block=/dev/block/by-name/boot; \
+          [ -L /dev/block/platform/bootdevice/by-name/boot ] && block=/dev/block/platform/bootdevice/by-name/boot;' anykernel.sh
           
-          zip -r9 ../OnePlus-Ace5U-V30-Stable.zip *
+          zip -r9 ../OnePlus-Ace5U-V31-Final.zip *
 
       - name: 7. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: Ace5U-PLC110-V30
-          path: ./OnePlus-Ace5U-V30-Stable.zip
+          name: Ace5U-PLC110-V31
+          path: ./OnePlus-Ace5U-V31-Final.zip
