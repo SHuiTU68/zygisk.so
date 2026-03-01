@@ -1,4 +1,4 @@
-name: OnePlus Ace5U (PLC110) MT6991 V15-Fix
+name: OnePlus Ace5U (PLC110) V21-LTO-LZ4-Energy
 on:
   workflow_dispatch:
 
@@ -6,72 +6,87 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境与源码获取
+      - name: 1. 深度环境配置
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip ipset python-is-python3
+          sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip ipset python-is-python3 lz4
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-tool
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 2. 应用 Numbersf Hmbird 补丁
-        # 截图 1000022778.jpg 证实此步成功
+      - name: 2. 【搜寻优化】移植 Adios 调度器 (6.6 核心适配)
+        run: |
+          cd kernel-source/block
+          wget https://raw.githubusercontent.com/mizuno-shun/android_kernel_xiaomi_chime/main/block/adios-iosched.c
+          echo "obj-y += adios-iosched.o" >> Makefile
+          sed -i '/menu "IO Schedulers"/a config IOSCHED_ADIOS\n\tbool "Adios I/O scheduler"\n\tdefault y' Kconfig
+
+      - name: 3. 【核心优化】LTO + LZ4-HC + 省电宏设置
+        run: |
+          cd kernel-source
+          # 1. 强制 LZ4-HC 极速解压
+          scripts/config --file arch/arm64/configs/gki_defconfig -e CONFIG_KERNEL_LZ4 -e CONFIG_LZ4_HC
+          sed -i 's/lz4c -l/lz4 -9/g' scripts/Makefile.lib
+          
+          # 2. 开启 ThinLTO (链接时全局优化)
+          scripts/config --file arch/arm64/configs/gki_defconfig -e CONFIG_LTO_CLANG_THIN
+          
+          # 3. 深度省电优化 (TEO Governor)
+          scripts/config --file arch/arm64/configs/gki_defconfig \
+            -e CONFIG_CPU_IDLE_GOV_TEO \
+            -e CONFIG_WQ_POWER_EFFICIENT_DEFAULT \
+            -e CONFIG_ENERGY_MODEL
+          
+          # 4. 内存优化 (MGLRU)
+          scripts/config --file arch/arm64/configs/gki_defconfig -e CONFIG_LRU_GEN -e CONFIG_LRU_GEN_ENABLED
+
+      - name: 4. 应用 Numbersf Hmbird 补丁
         run: |
           cd kernel-source
           wget https://raw.githubusercontent.com/Numbersf/Action-Build/SukiSU-Ultra/patches/hmbird_patch.patch
           patch -p1 < hmbird_patch.patch
 
-      - name: 3. 【修复】精准集成 KSUN dev 分支
-        # 解决截图 1000022783.jpg 中路径不匹配的问题
+      - name: 5. KSUN 集成 (稳定版)
         run: |
           cd kernel-source
-          # 先清理残留
-          rm -rf kernel/ksu
-          # 先克隆到外部，再移动内核文件夹，确保层级正确
-          git clone -b dev https://github.com/rifsxd/KernelSU-Next.git ../ksu_tmp
-          mv ../ksu_tmp/kernel kernel/ksu
-          
-          # 物理检查：如果还找不到文件就直接停止，不浪费时间编译
-          ls kernel/ksu/ksu.c || { echo "KSUN源码路径依然错误"; exit 1; }
-
-          # 写入配置逻辑
+          git clone -b dev https://github.com/rifsxd/KernelSU-Next.git kernel/ksu
           sed -i '/source "drivers\/Kconfig"/a source "kernel\/ksu\/Kconfig"' drivers/Kconfig
           echo "obj-y += ksu/" >> kernel/Makefile
-          
-          # 修复 Android 15/OOS16 UID 适配
           sed -i 's/current_uid().val/from_kuid_munged(\&init_user_ns, current_uid())/g' kernel/ksu/ksu.c || true
-          # 强制 Hybrid 模式
-          sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/ksu/Makefile || true
 
-      - name: 4. 执行内核编译
+      - name: 6. 编译内核 (O2 + LTO)
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-          MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
+          # 禁用 O3，保持 O2 稳健性并配合 LTO 深度链接优化
+          sed -i 's/-O3/-O2/g' Makefile
+          
+          # 这里的 LTO=thin 是关键，配合编译器进行全局性能提升
+          MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 LTO=thin CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
           make -j$(nproc) $MAKE_ARGS gki_defconfig
-          scripts/config --file .config -e CONFIG_KPROBES -e CONFIG_KPROBE_EVENTS -e CONFIG_OPLUS_FEATURE_HMBIRD
-          make -j$(nproc) $MAKE_ARGS V=1 Image.gz
+          scripts/config --file .config -e CONFIG_KPROBES -e CONFIG_KPROBE_EVENTS -e CONFIG_OPLUS_FEATURE_HMBIRD -e CONFIG_IOSCHED_ADIOS
+          make -j$(nproc) $MAKE_ARGS V=1 Image.lz4
 
-      - name: 5. 【核心修复】复刻并加固刷写逻辑
-        # 解决截图 1000022773.jpg 的 omap_hsmmc 错误
+      - name: 7. 【终极修复】AnyKernel3 刷写逻辑 (全路径覆盖)
+        # 彻底解决 omap_hsmmc 无法识别分区报错
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          cp kernel-source/arch/arm64/boot/Image.gz AK3/
+          cp kernel-source/arch/arm64/boot/Image.lz4 AK3/
           cd AK3
-          # 1. 锁死一加 PLC110 的逻辑分区物理路径
+          # 暴力禁用探测，直接写入逻辑分区名
           sed -i 's|block=auto|block=/dev/block/by-name/boot|g' anykernel.sh
-          # 2. 强制开启 A/B 分区槽位识别
           sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
-          # 3. 禁用设备校验，确保不同区域的机型都能刷入
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # 4. 写入机型代号
-          sed -i '/device.name1=/d' anykernel.sh
-          sed -i '/do.devicecheck=0/a device.name1=PLC110\ndevice.name2=oneplus_ace_5_pro' anykernel.sh
+          # 增加天玑平台物理路径补退逻辑
+          sed -i '/setup_env/a \
+          [ -L /dev/block/by-name/boot ] && block=/dev/block/by-name/boot; \
+          [ -L /dev/block/platform/bootdevice/by-name/boot ] && block=/dev/block/platform/bootdevice/by-name/boot; \
+          [ -L /dev/block/mapper/boot ] && block=/dev/block/mapper/boot;' anykernel.sh
           
-          zip -r9 ../OnePlus-Ace5U-PLC110-V15.zip *
+          zip -r9 ../OnePlus-Ace5U-V21-LTO-Optimized.zip *
 
-      - name: 6. 上传产物
-        uses: actions/upload-artifact@v4
+      - name: 8. 上传
+        uses: upload-artifact@v4
         with:
-          name: Ace5U-PLC110-V15
-          path: ./OnePlus-Ace5U-PLC110-V15.zip
+          name: Ace5U-PLC110-V21
+          path: ./OnePlus-Ace5U-V21-LTO-Optimized.zip
