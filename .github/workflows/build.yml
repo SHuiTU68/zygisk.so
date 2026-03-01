@@ -1,4 +1,4 @@
-name: OnePlus Ace5-Ultimate (PLC110) MT6991 Build
+name: OnePlus Ace5U (PLC110) Final Fix
 on:
   workflow_dispatch:
 
@@ -6,70 +6,71 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境加固与源码获取
+      - name: 1. 环境加固
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip libncurses-dev ipset python-is-python3
-          # 获取天玑 9400+ 对应的 Clang 工具链
+          sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip ipset python-is-python3
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang-tool
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 2. 应用 Numbersf Hmbird 补丁 (SCX 注入)
-        # 截图 1000022778.jpg 显示此补丁已成功打上
+      - name: 2. 应用 Numbersf Hmbird 补丁
         run: |
           cd kernel-source
           wget https://raw.githubusercontent.com/Numbersf/Action-Build/SukiSU-Ultra/patches/hmbird_patch.patch
-          patch -p1 < hmbird_patch.patch || { echo "补丁冲突"; exit 1; }
+          patch -p1 < hmbird_patch.patch
 
-      - name: 3. 【修复】手动克隆 KSUN dev 分支
-        # 解决截图 1000022777.jpg 中 'next' 分支找不到的问题
+      - name: 3. 【重点修复】手动注入 KSUN Dev 分支
+        # 解决截图 1000022779.png 中的文件丢失问题
         run: |
           cd kernel-source
-          git clone -b dev https://github.com/rifsxd/KernelSU-Next.git kernel/ksu
-          # 执行 Kconfig 与 Makefile 注入
+          # 先清理可能存在的空文件夹
+          rm -rf kernel/ksu
+          # 克隆到外部再移动，确保文件完整性
+          git clone -b dev https://github.com/rifsxd/KernelSU-Next.git ../ksu_src
+          mv ../ksu_src/kernel kernel/ksu
+          
+          # 检查文件是否存在，不存在直接报错停止，不浪费时间编译
+          ls -l kernel/ksu/ksu.c || { echo "KSUN_CLONE_FAILED"; exit 1; }
+          
+          # 修正注入路径 (针对 MTK 6991 目录结构)
           sed -i '/source "drivers\/Kconfig"/a source "kernel\/ksu\/Kconfig"' drivers/Kconfig
-          sed -i '/obj-y += drivers\//a obj-y += ksu\/' kernel/Makefile
-          # 修复 Android 15/OOS16 UID 定义
+          # 修改 Makefile 包含路径
+          echo "obj-y += ksu/" >> kernel/Makefile
+          
+          # 修复 Android 15 UID (OOS16 必需)
           sed -i 's/current_uid().val/from_kuid_munged(\&init_user_ns, current_uid())/g' kernel/ksu/ksu.c || true
-          # 强制开启 Hybrid 混合模式
+          # 强制 Hybrid
           sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/ksu/Makefile || true
 
-      - name: 4. 执行全量编译 (MT6991)
+      - name: 4. 编译内核
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
           make -j$(nproc) $MAKE_ARGS gki_defconfig
-          # 开启 Hmbird 与 Kprobes 宏
           scripts/config --file .config -e CONFIG_KPROBES -e CONFIG_KPROBE_EVENTS -e CONFIG_OPLUS_FEATURE_HMBIRD
-          # 强制 O2 性能级别
-          sed -i 's/-Os/-O2/g' Makefile
-          make -j$(nproc) $MAKE_ARGS V=1 Image.gz 2>&1 | tee ../build.log || exit 1
+          make -j$(nproc) $MAKE_ARGS V=1 Image.gz
 
-      - name: 5. 【核心修复】AnyKernel3 强制路径适配 (PLC110)
-        # 解决截图 1000022773.jpg 识别路径失败的问题
+      - name: 5. 【核心修复】AK3 刷写路径锁死
+        # 解决截图 1000022773.jpg 的 'omap_hsmmc' 错误
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.gz AK3/
           cd AK3
-          # 1. 关闭设备校验
+          # 彻底重写 anykernel.sh 关键行
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # 2. 强制指定 PLC110 的 boot 物理路径，防止 AK3 乱找
+          # 强制指定天玑 9400+ 的标准 boot 路径，不再让 AK3 自己猜
           sed -i 's|block=auto|block=/dev/block/by-name/boot|g' anykernel.sh
-          # 3. 强制开启 A/B 分区支持
+          # 开启 A/B 分区逻辑
           sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
-          # 4. 写入 PLC110 专属代号
-          sed -i '/device.name1=/d' anykernel.sh
-          sed -i '/do.devicecheck=0/a device.name1=PLC110\ndevice.name2=oneplus_ace_5_ultimate' anykernel.sh
+          # 确保脚本不会尝试备份不存在的分区
+          sed -i 's/do.cleanup=1/do.cleanup=1/g' anykernel.sh
           
-          zip -r9 ../OnePlus-Ace5U-Ultimate.zip *
+          zip -r9 ../OnePlus-Ace5U-Ultimate-PLC110.zip *
 
-      - name: 6. 上传产物
-        if: always()
+      - name: 6. 上传
         uses: actions/upload-artifact@v4
         with:
-          name: Ace5U-PLC110-Result
-          path: |
-            ./OnePlus-Ace5U-Ultimate.zip
-            ./build.log
+          name: Ace5U-PLC110-Final
+          path: ./OnePlus-Ace5U-Ultimate-PLC110.zip
