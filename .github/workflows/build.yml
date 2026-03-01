@@ -1,4 +1,4 @@
-name: OnePlus Ace5U (PLC110) Final Fix
+name: OnePlus Ace5U (PLC110) V14-CCTV-Logic
 on:
   workflow_dispatch:
 
@@ -6,7 +6,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境加固
+      - name: 1. 环境加固与源码获取
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip ipset python-is-python3
@@ -15,62 +15,64 @@ jobs:
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
       - name: 2. 应用 Numbersf Hmbird 补丁
+        # 截图 1000022778.jpg 显示此步已成功，保留作为性能核心
         run: |
           cd kernel-source
           wget https://raw.githubusercontent.com/Numbersf/Action-Build/SukiSU-Ultra/patches/hmbird_patch.patch
           patch -p1 < hmbird_patch.patch
 
-      - name: 3. 【重点修复】手动注入 KSUN Dev 分支
-        # 解决截图 1000022779.png 中的文件丢失问题
+      - name: 3. 【精准修复】集成 KSUN dev 分支
+        # 解决截图 1000022779.png 找不到文件的问题
         run: |
           cd kernel-source
-          # 先清理可能存在的空文件夹
-          rm -rf kernel/ksu
-          # 克隆到外部再移动，确保文件完整性
-          git clone -b dev https://github.com/rifsxd/KernelSU-Next.git ../ksu_src
-          mv ../ksu_src/kernel kernel/ksu
+          # 强制指定克隆目录名为 ksu，防止层级混乱
+          git clone -b dev https://github.com/rifsxd/KernelSU-Next.git kernel/ksu
           
-          # 检查文件是否存在，不存在直接报错停止，不浪费时间编译
-          ls -l kernel/ksu/ksu.c || { echo "KSUN_CLONE_FAILED"; exit 1; }
-          
-          # 修正注入路径 (针对 MTK 6991 目录结构)
+          # 检查文件物理存在
+          ls kernel/ksu/ksu.c || { echo "KSUN源码克隆路径错误"; exit 1; }
+
+          # 参考 cctv18 注入逻辑
           sed -i '/source "drivers\/Kconfig"/a source "kernel\/ksu\/Kconfig"' drivers/Kconfig
-          # 修改 Makefile 包含路径
           echo "obj-y += ksu/" >> kernel/Makefile
           
-          # 修复 Android 15 UID (OOS16 必需)
+          # 修复 Android 15/OOS16 UID 定义
           sed -i 's/current_uid().val/from_kuid_munged(\&init_user_ns, current_uid())/g' kernel/ksu/ksu.c || true
-          # 强制 Hybrid
+          # 强制开启 Hybrid 模式
           sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/ksu/Makefile || true
 
-      - name: 4. 编译内核
+      - name: 4. 内核编译 (PLC110)
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
           make -j$(nproc) $MAKE_ARGS gki_defconfig
+          # 启用 Hmbird 补丁所需的宏
           scripts/config --file .config -e CONFIG_KPROBES -e CONFIG_KPROBE_EVENTS -e CONFIG_OPLUS_FEATURE_HMBIRD
-          make -j$(nproc) $MAKE_ARGS V=1 Image.gz
+          make -j$(nproc) $MAKE_ARGS V=1 Image.gz 2>&1 | tee ../build.log || exit 1
 
-      - name: 5. 【核心修复】AK3 刷写路径锁死
-        # 解决截图 1000022773.jpg 的 'omap_hsmmc' 错误
+      - name: 5. 【终极修复】AnyKernel3 深度锁死路径
+        # 彻底解决截图 1000022773.jpg 的 omap_hsmmc 报错
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.gz AK3/
           cd AK3
-          # 彻底重写 anykernel.sh 关键行
+          # 1. 禁用所有可能导致回滚的自动校验
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          # 强制指定天玑 9400+ 的标准 boot 路径，不再让 AK3 自己猜
+          # 2. 【核心】直接锁死 PLC110 的分区挂载点，跳过探测算法
           sed -i 's|block=auto|block=/dev/block/by-name/boot|g' anykernel.sh
-          # 开启 A/B 分区逻辑
+          # 3. 强制 A/B 槽位逻辑
           sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
-          # 确保脚本不会尝试备份不存在的分区
-          sed -i 's/do.cleanup=1/do.cleanup=1/g' anykernel.sh
+          # 4. 加入 PLC110 专属识别名
+          sed -i '/device.name1=/d' anykernel.sh
+          sed -i '/do.devicecheck=0/a device.name1=PLC110\ndevice.name2=oneplus_ace_5_pro' anykernel.sh
           
-          zip -r9 ../OnePlus-Ace5U-Ultimate-PLC110.zip *
+          zip -r9 ../OnePlus-Ace5U-PLC110-V14.zip *
 
       - name: 6. 上传
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Ace5U-PLC110-Final
-          path: ./OnePlus-Ace5U-Ultimate-PLC110.zip
+          name: Ace5U-PLC110-V14
+          path: |
+            ./OnePlus-Ace5U-PLC110-V14.zip
+            ./build.log
