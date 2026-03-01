@@ -1,4 +1,4 @@
-name: OnePlus MT6991 Wild-Ultimate V10 (KSUN Fix)
+name: OnePlus MT6991 Wild-Ultimate V11 (AK3 Fix)
 on:
   workflow_dispatch:
 
@@ -11,7 +11,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison git libssl-dev libelf-dev zip libncurses-dev ipset python-is-python3
           sudo ln -s /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5 || true
-          sudo ln -s /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5 || true
 
       - name: 2. 获取源码与工具链
         run: |
@@ -19,69 +18,51 @@ jobs:
           mkdir -p clang && cp -r clang-tool/clang-r522817/* clang/
           git clone --depth=1 https://github.com/OnePlusOSS/android_kernel_oneplus_mt6991.git kernel-source
 
-      - name: 3. 集成 KernelSU-Next (专项修复逻辑)
+      - name: 3. 应用 Numbersf Hmbird 补丁
         run: |
           cd kernel-source
-          # 使用官方脚本集成
+          wget https://raw.githubusercontent.com/Numbersf/Action-Build/SukiSU-Ultra/patches/hmbird_patch.patch
+          patch -p1 < hmbird_patch.patch || { echo "PATCH_ERROR"; exit 1; }
+
+      - name: 4. 集成 KernelSU-Next (强制开启 Hybrid)
+        run: |
+          cd kernel-source
           curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          
-          # [修复 1] 处理 Android 15 可能存在的常量定义冲突
           sed -i 's/current_uid().val/from_kuid_munged(\&init_user_ns, current_uid())/g' kernel/ksu/ksu.c || true
-          
-          # [修复 2] 强制开启 Kprobes 编译支持
           sed -i 's/obj-$(CONFIG_KPROBES) += hooks.o/obj-y += hooks.o/g' kernel/Makefile
-          
-          # [修复 3] 移除内核版本检查导致的警告
           sed -i 's/if (!ksu_kprobes_enrolled)/if (0)/g' kernel/ksu/supercalls.c || true
 
-      - name: 4. 配置 Wild/SCX 特性 (Hmbird 鸿鹄)
-        run: |
-          cd kernel-source
-          DEFCONFIG="arch/arm64/configs/gki_defconfig"
-          
-          # 开启游戏调度与性能宏
-          scripts/config --file $DEFCONFIG -e CONFIG_OPLUS_FEATURE_HMBIRD
-          scripts/config --file $DEFCONFIG -e CONFIG_SCHED_CLASS_EXT
-          
-          # 开启 Kprobes (KSUN 运行基础)
-          scripts/config --file $DEFCONFIG -e CONFIG_KPROBES
-          scripts/config --file $DEFCONFIG -e CONFIG_KPROBE_EVENTS
-          
-          # 开启 TTL 与 IPSET
-          scripts/config --file $DEFCONFIG -e CONFIG_NETFILTER_XT_TARGET_HL
-          scripts/config --file $DEFCONFIG -e CONFIG_IP_SET
-          
-          # 提升编译优化等级
-          sed -i 's/-Os/-O2/g' Makefile
-
-      - name: 5. 编译内核 (全量捕捉日志)
+      - name: 5. 内核编译
         run: |
           cd kernel-source
           export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
           make clean && make mrproper
-          
           MAKE_ARGS="ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
-          
-          # 记录配置阶段日志
-          make -j$(nproc) $MAKE_ARGS gki_defconfig 2>&1 | tee ../build.log
-          
-          # 编译 Image.gz
-          make -j$(nproc) $MAKE_ARGS V=1 Image.gz 2>&1 | tee -a ../build.log || exit 1
+          make -j$(nproc) $MAKE_ARGS gki_defconfig
+          scripts/config --file .config -e CONFIG_KPROBES -e CONFIG_KPROBE_EVENTS -e CONFIG_OPLUS_FEATURE_HMBIRD
+          make -j$(nproc) $MAKE_ARGS V=1 Image.gz 2>&1 | tee ../build.log || exit 1
 
-      - name: 6. 打包发布
-        if: success()
+      - name: 6. 【重点】AnyKernel3 深度适配刷写修复
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
           cp kernel-source/arch/arm64/boot/Image.gz AK3/
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AK3/anykernel.sh
-          sed -i 's/block=auto/block=boot/g' AK3/anykernel.sh
-          cd AK3 && zip -r9 ../OnePlus-MT6991-Wild-V10.zip *
+          
+          cd AK3
+          # 修改 anykernel.sh 适配一加 MTK 平台
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i 's/block=auto/block=boot/g' anykernel.sh
+          sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
+          # 添加对 OOS16 动态分区的潜在支持描述
+          sed -i '/device.name1=/d' anykernel.sh
+          sed -i '/do.devicecheck=0/a device.name1=oneplus13\ndevice.name2=oneplus13pro\ndevice.name3=OP5971\ndevice.name4=OP5B81' anykernel.sh
+          
+          zip -r9 ../OnePlus-MT6991-Hmbird-Numbersf.zip *
 
-      - name: 7. 自动上传
+      - name: 7. 上传结果
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: KSUN-Fix-Build
+          name: AK3-Fix-Build
           path: |
-            ./OnePlus-MT6991-Wild-V10.zip
+            ./OnePlus-MT6991-Hmbird-Numbersf.zip
             ./build.log
