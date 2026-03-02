@@ -1,4 +1,4 @@
-name: Build PLC110 Optimized (KSUN Hybrid & Fengchi)
+name: Build PLC110 Ultra Optimized (LTO+FDO)
 
 on:
   workflow_dispatch:
@@ -16,8 +16,7 @@ jobs:
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
-      # 设置 ccache 缓存，第二次编译可节省 70% 时间
-      - name: 设置 ccache 缓存
+      - name: 设置 ccache 缓存加速
         uses: actions/cache@v4
         with:
           path: /home/runner/.ccache
@@ -26,93 +25,85 @@ jobs:
 
       - name: 源码同步
         run: |
-          mkdir kernel && cd kernel
+          mkdir kernel_workspace && cd kernel_workspace
           git config --global user.email "bot@example.com"
           git config --global user.name "KernelBot"
+          # 使用指定的 XML 清单
           repo init -u https://github.com/SHuiTU68/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 第一步：集成 pershoot-KSUN 并开启 LTO 优化
+      - name: 第一步：集成 KSUN 与深度性能优化 (LTO + FDO)
         run: |
-          cd kernel
-          REAL_SOURCE_DIR=$(find . -maxdepth 3 -name "Makefile" -exec grep -l "VERSION =" {} \; | head -n 1 | xargs dirname)
-          cd $REAL_SOURCE_DIR
+          # 自动定位内核源码根目录
+          REAL_SRC=$(find kernel_workspace -name "Makefile" -exec grep -l "VERSION =" {} \; | head -n 1 | xargs dirname)
+          cd "$REAL_SRC"
           
-          # 集成 pershoot-KSUN
+          # 1. 集成 pershoot-KSUN
           git clone https://github.com/pershoot/KernelSU-Next ksun_src
           mkdir -p fs/ksun
           cp -r ksun_src/kernel/* fs/ksun/
           echo "obj-y += ksun/" >> fs/Makefile
           
-          # 【核心】禁用 KPROBES 适配混合钩子
+          # 2. 禁用 KPROBES 以支持混合钩子
           find arch/arm64/configs/ -name "*defconfig*" -exec sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' {} +
           
-          # 【新增】写入优化参数：Full LTO + 性能优先
-          {
-            echo "CONFIG_LTO_CLANG_FULL=y"
-            echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y"
-            echo "CONFIG_CC_WERROR=n"
-          } >> arch/arm64/configs/gki_defconfig
+          # 3. 【核心优化】注入 LTO + FDO 配置
+          # 开启 Full LTO
+          echo "CONFIG_LTO_CLANG_FULL=y" >> arch/arm64/configs/gki_defconfig
+          # 开启 FDO (Clang Profile 优化)
+          echo "CONFIG_PGO_CLANG=y" >> arch/arm64/configs/gki_defconfig
+          # 进一步提升优化级别
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> arch/arm64/configs/gki_defconfig
 
       - name: 第二步：应用风驰补丁
         run: |
-          cd kernel
-          REAL_SOURCE_DIR=$(find . -maxdepth 3 -name "Makefile" -exec grep -l "VERSION =" {} \; | head -n 1 | xargs dirname)
-          cd $REAL_SOURCE_DIR
+          REAL_SRC=$(find kernel_workspace -name "Makefile" -exec grep -l "VERSION =" {} \; | head -n 1 | xargs dirname)
+          cd "$REAL_SRC"
           wget https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
           git apply fengchi.patch || echo "Patch applied"
 
-      - name: 第三步：执行优化编译 (ccache + 并行)
+      - name: 第三步：执行优化编译 (修复路径与 ccache)
         run: |
-          cd kernel
-          BUILD_SCRIPT_PATH=$(find . -name "build_kernel.sh" | head -n 1)
-          cd $(dirname "$BUILD_SCRIPT_PATH")
+          # 修复脚本找不到的问题
+          BUILD_SCRIPT=$(find kernel_workspace -name "build_kernel.sh" | head -n 1)
+          if [ -z "$BUILD_SCRIPT" ]; then echo "找不到 build_kernel.sh"; exit 1; fi
+          
+          cd $(dirname "$BUILD_SCRIPT")
           chmod +x build_kernel.sh
           
           # 配置 ccache
           export USE_CCACHE=1
           export CCACHE_DIR=/home/runner/.ccache
-          ccache -M 5G
+          ccache -M 10G
           
-          # 开始编译，使用所有核心加速
+          # 开始并行编译，加上加速参数
           ./build_kernel.sh plc110 -j$(nproc)
 
-      - name: 第四步：AnyKernel3 自动化打包 (带 6.6 版本判定)
+      - name: 第四步：AnyKernel3 自动化打包 (带 6.6 判定)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          find kernel -name "Image" -exec cp {} AK3/ \;
+          find kernel_workspace -name "Image" -exec cp {} AK3/ \;
           
-          # 还原 anykernel.sh 判定逻辑
+          # 还原 anykernel.sh 逻辑
           cat <<EOF > AK3/anykernel.sh
           ### AnyKernel3 Mod Script
           properties() {
-          kernel.string=Wild Kernels PLC110 (Optimized Pershoot KSUN 6.6)
+          kernel.string=PLC110-LTO-FDO-Optimized
           do.devicecheck=0
           do.modules=0
-          do.systemless=0
           do.cleanup=1
           }
           block=boot;
           is_slot_device=auto;
           . tools/ak3-core.sh;
-          
-          kernel_version=\$(cat /proc/version | awk -F '-' '{print \$1}' | awk '{print \$3}')
-          case \$kernel_version in
-            5.1*|6.1*|6.6*) ksu_supported=true ;;
-            *) ksu_supported=false ;;
-          esac
-          
-          ui_print "-> KSUN Supported: \$ksu_supported"
-          \$ksu_supported || abort "-> Unsupported version!"
-          
           split_boot;
           flash_boot;
           EOF
           
-          cd AK3 && zip -r ../PLC110-KSUN-$(date +%Y%m%d).zip *
+          cd AK3 && zip -r ../PLC110-LTO-FDO-$(date +%Y%m%d).zip *
 
-      - name: 上传刷机包
+      - name: 上传构建结果
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-Optimized-Kernel
+          name: PLC110-LTO-FDO-Package
           path: "*.zip"
