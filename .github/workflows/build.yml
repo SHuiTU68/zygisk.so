@@ -1,4 +1,4 @@
-name: Build PLC110 Kernel (Pershoot KSUN & Fengchi)
+name: Build PLC110 Kernel (Pershoot KSUN Hybrid 6.6)
 
 on:
   workflow_dispatch:
@@ -21,31 +21,36 @@ jobs:
           mkdir kernel && cd kernel
           git config --global user.email "bot@example.com"
           git config --global user.name "KernelBot"
-          # 使用你指定的 XML 源码清单
+          # 使用你指定的一加 Ace 5 Ultra XML 清单
           repo init -u https://github.com/SHuiTU68/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 第一步：集成 pershoot-KSUN
+      - name: 第一步：集成 pershoot-KSUN (手动链接模式)
         run: |
           cd kernel
-          # 动态寻找内核源码根目录
-          REAL_SOURCE_DIR=$(find . -maxdepth 3 -name "arch" -exec dirname {} \; | head -n 1)
+          # 动态定位内核源码根目录
+          REAL_SOURCE_DIR=$(find . -maxdepth 3 -name "Makefile" -exec grep -l "VERSION =" {} \; | head -n 1 | xargs dirname)
           cd $REAL_SOURCE_DIR
-          echo "当前内核源码路径: $(pwd)"
           
-          # 克隆 pershoot 分支并覆盖集成
-          git clone https://github.com/pershoot/KernelSU-Next KernelSU-Next
-          cp -r KernelSU-Next/kernel/* ./kernel/
-          cp -r KernelSU-Next/drivers/* ./drivers/
+          # 克隆 pershoot 的 KernelSU-Next 分支
+          git clone https://github.com/pershoot/KernelSU-Next ksun_src
+          
+          # 手动集成：将 ksun 源码放入 fs 目录 (常用集成方式)
+          mkdir -p fs/ksun
+          cp -r ksun_src/kernel/* fs/ksun/
+          
+          # 修改 fs/Makefile 启用编译
+          echo "obj-y += ksun/" >> fs/Makefile
           
           # 【核心配置】禁用 KPROBES 以启用混合钩子
           find arch/arm64/configs/ -name "*defconfig*" -exec sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' {} +
           [ -f arch/arm64/configs/gki_defconfig ] && sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KPROBES=n" >> arch/arm64/configs/gki_defconfig
 
       - name: 第二步：应用风驰补丁
         run: |
           cd kernel
-          REAL_SOURCE_DIR=$(find . -maxdepth 3 -name "arch" -exec dirname {} \; | head -n 1)
+          REAL_SOURCE_DIR=$(find . -maxdepth 3 -name "Makefile" -exec grep -l "VERSION =" {} \; | head -n 1 | xargs dirname)
           cd $REAL_SOURCE_DIR
           
           # 下载并应用风驰 patch
@@ -55,18 +60,17 @@ jobs:
       - name: 第三步：执行编译
         run: |
           cd kernel
-          # 确保脚本有执行权限
           chmod +x build_kernel.sh
-          # 针对一加 Ace 5 Ultra 编译
+          # 针对一加 Ace 5 Ultra 平台编译
           ./build_kernel.sh plc110
 
       - name: 第四步：AnyKernel3 自动化打包
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          # 自动寻找编译出的 Image 镜像
+          # 寻找编译生成的 Image 并放入打包目录
           find kernel/out -name "Image" -exec cp {} AK3/ \;
           
-          # 写入你截图要求的 anykernel.sh 逻辑
+          # 还原 anykernel.sh 判定逻辑
           cat <<EOF > AK3/anykernel.sh
           ### AnyKernel3 Ramdisk Mod Script
           properties() {
@@ -95,10 +99,10 @@ jobs:
           flash_boot;
           EOF
           
-          cd AK3 && zip -r ../PLC110-Kernel-Build.zip *
+          cd AK3 && zip -r ../PLC110-KSUN-Hybrid.zip *
 
       - name: 上传刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-Pershoot-KSUN-Package
-          path: PLC110-Kernel-Build.zip
+          name: PLC110-Kernel-Result
+          path: PLC110-KSUN-Hybrid.zip
