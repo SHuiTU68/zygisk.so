@@ -1,4 +1,4 @@
-name: Build & Package PLC110 Kernel
+name: Build & Package PLC110 Kernel (Fix Repo)
 
 on:
   workflow_dispatch:
@@ -7,35 +7,35 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 环境准备
+      - name: 环境准备与安装 Repo
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu git git-lfs gnupg gperf libncurses5-dev libssl-dev python3 rsync zip
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu git git-lfs gnupg gperf libncurses5-dev libssl-dev python3 rsync zip curl
+          # 安装 repo 工具
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
 
       - name: 源码同步
         run: |
           mkdir kernel && cd kernel
           git config --global user.email "bot@example.com"
           git config --global user.name "KernelBot"
+          # 使用你指定的 XML 路径
           repo init -u https://github.com/SHuiTU68/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 集成 KernelSU (Pershoot Hybrid)
+      - name: 集成 KernelSU (Pershoot) 与 补丁
         run: |
           cd kernel/common
+          # 集成 pershoot 分支
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s pershoot
-
-      - name: 应用风驰补丁
-        run: |
-          cd kernel/common
+          # 应用风驰补丁
           wget https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          git apply fengchi.patch || echo "补丁应用略有冲突，请检查源码"
-
-      - name: 禁用 KPROBES (方案1)
-        run: |
-          cd kernel/common
+          git apply fengchi.patch || echo "Patch conflict ignored"
+          # 禁用 KPROBES 避免冲突
           find arch/arm64/configs/ -name "*defconfig*" -exec sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' {} +
-          echo "CONFIG_KPROBES=n" >> arch/arm64/configs/gki_defconfig
 
       - name: 执行编译
         run: |
@@ -43,25 +43,57 @@ jobs:
           chmod +x build_kernel.sh
           ./build_kernel.sh plc110
 
-      - name: 使用 AnyKernel3 打包
+      - name: 制作 AnyKernel3 刷机包
         run: |
-          # 克隆 AK3 模版（根据你截图的 Wild 风格，这里建议拉取基础模版）
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          
-          # 复制编译出的内核 Image 到 AK3 目录
-          # 路径通常在 kernel/out/arch/arm64/boot/Image
           cp kernel/out/arch/arm64/boot/Image AK3/
           
-          # 针对 PLC110 修改 anykernel.sh 配置 (参考你截图的内容)
-          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AK3/anykernel.sh
-          sed -i 's/block=auto/block=boot/g' AK3/anykernel.sh
+          # 创建符合你截图逻辑的 anykernel.sh
+          cat <<EOF > AK3/anykernel.sh
+          ### AnyKernel3 Ramdisk Mod Script
+          properties() {
+          kernel.string=Wild Kernels by TheWildJames (Custom Build)
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          }
           
-          # 制作 Zip 包
-          cd AK3
-          zip -r ../PLC110-Kernel-KSU-SUSFS.zip *
+          block=boot;
+          is_slot_device=auto;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+          no_magisk_check=1;
+          
+          . tools/ak3-core.sh;
+          
+          # 核心版本检测逻辑
+          kernel_version=\$(cat /proc/version | awk -F '-' '{print \$1}' | awk '{print \$3}')
+          case \$kernel_version in
+            5.1*) ksu_supported=true ;;
+            6.1*) ksu_supported=true ;;
+            6.6*) ksu_supported=true ;;
+            *) ksu_supported=false ;;
+          esac
+          
+          ui_print " "
+          ui_print "-> Wild Kernels Supported: \$ksu_supported"
+          \$ksu_supported || abort "-> Non-GKI device, abort."
+          
+          split_boot;
+          if [ -f "split_img/ramdisk.cpio" ]; then
+            unpack_ramdisk;
+            write_boot;
+          else
+            flash_boot;
+          fi
+          EOF
+          
+          cd AK3 && zip -r ../PLC110-Kernel.zip *
 
       - name: 上传刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110_Kernel_Flashable
-          path: PLC110-Kernel-KSU-SUSFS.zip
+          name: PLC110-KSU-Pershoot-Package
+          path: PLC110-Kernel.zip
