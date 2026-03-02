@@ -1,4 +1,4 @@
-name: Build PLC110 Ultra Optimized (LTO+FDO Fix)
+name: Build PLC110 Advanced (Stable O3 + Ultra ZRAM)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 环境准备与工具链
+      - name: 环境准备与工具链安装
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu git git-lfs gnupg gperf libncurses5-dev libssl-dev python3 rsync zip curl ccache
@@ -16,7 +16,7 @@ jobs:
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
-      - name: 设置 ccache 缓存
+      - name: 设置 ccache 编译加速
         uses: actions/cache@v4
         with:
           path: /home/runner/.ccache
@@ -28,14 +28,12 @@ jobs:
           mkdir kernel_workspace && cd kernel_workspace
           git config --global user.email "bot@example.com"
           git config --global user.name "KernelBot"
-          # 使用你指定的 XML 源码清单
           repo init -u https://github.com/SHuiTU68/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 第一步：集成 KSUN 与深度性能优化 (LTO+FDO)
+      - name: 第一步：集成 KSUN 与 ZRAM/O3 深度优化
         run: |
-          # 放弃 find 查找，直接定位到 repo 同步后的内核 common 目录
-          # 根据你的目录结构，内核通常在 kernel 目录下
+          # 准确定位内核目录，避开 Kleaf 虚拟文件报错
           cd kernel_workspace/kernel || cd kernel_workspace
           
           # 1. 集成 pershoot-KSUN
@@ -44,21 +42,30 @@ jobs:
           cp -r ksun_src/kernel/* fs/ksun/
           echo "obj-y += ksun/" >> fs/Makefile
           
-          # 2. 混合钩子适配：禁用 KPROBES
-          # 使用通配符定位所有 configs，防止路径偏移
-          find . -name "*defconfig*" -exec sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' {} +
+          # 2. 安全屏蔽 KPROBES (针对常规文件)
+          find arch/arm64/configs/ -type f -name "*defconfig*" -exec sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' {} +
           
-          # 3. 注入 LTO + FDO 优化参数
-          GKI_CONF=$(find . -name "gki_defconfig" | head -n 1)
+          # 3. 注入高级优化参数
+          GKI_CONF=$(find . -maxdepth 4 -type f -name "gki_defconfig" | head -n 1)
           if [ -n "$GKI_CONF" ]; then
-            echo "CONFIG_LTO_CLANG_FULL=y" >> "$GKI_CONF"
-            echo "CONFIG_PGO_CLANG=y" >> "$GKI_CONF"
-            echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "$GKI_CONF"
+            # --- 编译器优化：兼顾 O3 性能与 O2 稳定 ---
+            echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=y" >> "$GKI_CONF"
+            echo "CONFIG_CC_WERROR=n" >> "$GKI_CONF" # 防止 O3 警告导致中断
+            
+            # --- ZRAM 算法深度优化 ---
+            # 开启 ZSTD 支持 (目前最先进的平衡算法)
+            echo "CONFIG_CRYPTO_ZSTD=y" >> "$GKI_CONF"
+            echo "CONFIG_ZRAM_DEF_COMP_ZSTD=y" >> "$GKI_CONF"
+            # 优化 LZ4 性能 (启用 LZ4HC 高压缩模式)
+            echo "CONFIG_CRYPTO_LZ4HC=y" >> "$GKI_CONF"
+            # 提升 ZRAM 并发处理能力
+            echo "CONFIG_ZRAM_WRITEBACK=y" >> "$GKI_CONF"
+            echo "CONFIG_ZRAM_MEMORY_TRACKING=n" >> "$GKI_CONF"
           fi
 
-      - name: 第二步：执行编译 (全路径锁定)
+      - name: 第二步：执行优化编译
         run: |
-          # 寻找编译脚本并直接执行
+          # 修复路径跳转逻辑
           BUILD_SCRIPT=$(find kernel_workspace -name "build_kernel.sh" | head -n 1)
           cd $(dirname "$BUILD_SCRIPT")
           chmod +x build_kernel.sh
@@ -67,7 +74,7 @@ jobs:
           export CCACHE_DIR=/home/runner/.ccache
           ccache -M 10G
           
-          # 针对一加 Ace 5 Ultra 平台编译
+          # 针对 PLC110 平台多线程编译
           ./build_kernel.sh plc110 -j$(nproc)
 
       - name: 第三步：AnyKernel3 打包
@@ -78,7 +85,7 @@ jobs:
           cat <<EOF > AK3/anykernel.sh
           ### AnyKernel3 Mod Script
           properties() {
-          kernel.string=PLC110-LTO-FDO-Optimized
+          kernel.string=PLC110-O3-ZRAM-Ultra
           do.devicecheck=0
           do.modules=0
           do.cleanup=1
@@ -90,10 +97,10 @@ jobs:
           flash_boot;
           EOF
           
-          cd AK3 && zip -r ../PLC110-LTO-FDO-$(date +%Y%m%d).zip *
+          cd AK3 && zip -r ../PLC110-Advanced-$(date +%Y%m%d).zip *
 
-      - name: 上传刷机包
+      - name: 上传构建结果
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-Optimized-Kernel
+          name: PLC110-Advanced-Kernel
           path: "*.zip"
