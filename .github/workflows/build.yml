@@ -1,4 +1,4 @@
-name: Build PLC110 Kernel (Pershoot KSUN Hybrid)
+name: Build PLC110 Kernel (Pershoot KSUN & Fengchi)
 
 on:
   workflow_dispatch:
@@ -25,42 +25,48 @@ jobs:
           repo init -u https://github.com/SHuiTU68/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 集成 Pershoot KSUN 与风驰补丁
+      - name: 第一步：集成 pershoot-KSUN
         run: |
-          # 修复路径问题：进入 repo 同步后的内核根目录
-          cd kernel/common || cd kernel/android-kernel || exit 1
+          cd kernel
+          # 动态寻找内核源码根目录
+          REAL_SOURCE_DIR=$(find . -maxdepth 3 -name "arch" -exec dirname {} \; | head -n 1)
+          cd $REAL_SOURCE_DIR
+          echo "当前内核源码路径: $(pwd)"
           
-          # 克隆 pershoot 的 KSUN 分支 (支持 Hybrid Hook)
+          # 克隆 pershoot 分支并覆盖集成
           git clone https://github.com/pershoot/KernelSU-Next KernelSU-Next
           cp -r KernelSU-Next/kernel/* ./kernel/
           cp -r KernelSU-Next/drivers/* ./drivers/
           
-          # 下载并应用风驰 patch
-          wget https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          git apply fengchi.patch || echo "Patch applied with warnings"
-          
-          # 【核心】根据截图建议：禁用 KPROBES 以启用混合钩子
+          # 【核心配置】禁用 KPROBES 以启用混合钩子
           find arch/arm64/configs/ -name "*defconfig*" -exec sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' {} +
           [ -f arch/arm64/configs/gki_defconfig ] && sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' arch/arm64/configs/gki_defconfig
 
-      - name: 执行编译
+      - name: 第二步：应用风驰补丁
         run: |
           cd kernel
+          REAL_SOURCE_DIR=$(find . -maxdepth 3 -name "arch" -exec dirname {} \; | head -n 1)
+          cd $REAL_SOURCE_DIR
+          
+          # 下载并应用风驰 patch
+          wget https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
+          git apply fengchi.patch || echo "Patch applied with warnings"
+
+      - name: 第三步：执行编译
+        run: |
+          cd kernel
+          # 确保脚本有执行权限
           chmod +x build_kernel.sh
           # 针对一加 Ace 5 Ultra 编译
           ./build_kernel.sh plc110
 
-      - name: AnyKernel3 自动化打包
+      - name: 第四步：AnyKernel3 自动化打包
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          # 复制生成的 Image 镜像
-          if [ -f kernel/out/arch/arm64/boot/Image ]; then
-            cp kernel/out/arch/arm64/boot/Image AK3/
-          else
-            find kernel/out -name "Image" -exec cp {} AK3/ \;
-          fi
+          # 自动寻找编译出的 Image 镜像
+          find kernel/out -name "Image" -exec cp {} AK3/ \;
           
-          # 还原 anykernel.sh 判定逻辑
+          # 写入你截图要求的 anykernel.sh 逻辑
           cat <<EOF > AK3/anykernel.sh
           ### AnyKernel3 Ramdisk Mod Script
           properties() {
@@ -75,7 +81,7 @@ jobs:
           is_slot_device=auto;
           . tools/ak3-core.sh;
           
-          # 核心版本检测
+          # 内核版本判定 (支持 6.6)
           kernel_version=\$(cat /proc/version | awk -F '-' '{print \$1}' | awk '{print \$3}')
           case \$kernel_version in
             5.1*|6.1*|6.6*) ksu_supported=true ;;
@@ -89,10 +95,10 @@ jobs:
           flash_boot;
           EOF
           
-          cd AK3 && zip -r ../PLC110-Kernel-KSUN.zip *
+          cd AK3 && zip -r ../PLC110-Kernel-Build.zip *
 
       - name: 上传刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-Pershoot-KSUN
-          path: PLC110-Kernel-KSUN.zip
+          name: PLC110-Pershoot-KSUN-Package
+          path: PLC110-Kernel-Build.zip
