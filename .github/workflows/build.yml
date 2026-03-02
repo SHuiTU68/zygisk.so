@@ -1,239 +1,99 @@
-name: Build OnePlus Ace 5 Ultra Kernel (AK3 + Kprobe off)
+name: Build PLC110 Ultra Optimized (LTO+FDO Fix)
 
 on:
   workflow_dispatch:
-    inputs:
-      hook_type:
-        description: 'Hook Type (Hybridhook / Inline / Default)'
-        required: true
-        default: 'Hybridhook'
-        type: choice
-        options:
-          - Hybridhook
-          - Inline
-          - Default
-      defconfig:
-        description: 'Defconfig path (e.g., vendor/k6985v1_64_k510_tiger_defconfig)'
-        required: true
-        default: 'vendor/XXXX_defconfig'   # <--- 请修改为实际 defconfig
-      ksu_branch:
-        description: 'KernelSU-Next branch (pershoot repo)'
-        required: false
-        default: 'main'                    # <--- 请修改为实际支持混合钩子的分支名
-      boot_block:
-        description: 'Boot partition block path (for anykernel.sh)'
-        required: false
-        default: '/dev/block/by-name/boot'
-
-env:
-  CLANG_VERSION: 'clang-r487747c'          # 可根据需要调整
-  WORK_DIR: ${{ github.workspace }}
-  MANIFEST_REPO: 'https://github.com/SHuiTU68/OnePlus_KernelSU_SUSFS.git'
-  MANIFEST_PATH: 'manifests/oos16/oneplus_ace5_ultra_w.xml'
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
-      - name: Maximize build space
-        run: |
-          sudo apt-get clean
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
-          df -h
-
-      - name: Install dependencies
+      - name: 环境准备与工具链
         run: |
           sudo apt-get update
-          sudo apt-get install -y git ccache build-essential flex bison \
-            libssl-dev libelf-dev libncurses-dev libtinfo5 bc cpio kmod \
-            python3 python3-pip wget curl lz4 zstd device-tree-compiler \
-            unzip
-          sudo curl -o /usr/local/bin/repo https://storage.googleapis.com/git-repo-downloads/repo
-          sudo chmod a+x /usr/local/bin/repo
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu git git-lfs gnupg gperf libncurses5-dev libssl-dev python3 rsync zip curl ccache
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
 
-      # ========== 1. 使用 repo 同步内核源码 ==========
-      - name: Clone manifest repository
-        run: git clone --depth=1 ${{ env.MANIFEST_REPO }} manifest-repo
-
-      - name: Initialize repo with manifest
-        working-directory: ${{ env.WORK_DIR }}
-        run: |
-          mkdir -p kernel-source
-          cd kernel-source
-          repo init -u ${{ env.WORK_DIR }}/manifest-repo -m ${{ env.MANIFEST_PATH }}
-          repo sync -c --no-tags --fail-fast
-
-      - name: Locate kernel source
-        id: find_kernel
-        working-directory: kernel-source
-        run: |
-          KERNEL_DIR=$(find . -type f -name "Makefile" -exec dirname {} \; | head -1)
-          echo "path=$KERNEL_DIR" >> $GITHUB_OUTPUT
-          echo "full_path=${{ env.WORK_DIR }}/kernel-source/$KERNEL_DIR" >> $GITHUB_OUTPUT
-
-      # ========== 2. 应用风驰游戏内核补丁 ==========
-      - name: Apply FengChi Patch
-        working-directory: ${{ steps.find_kernel.outputs.full_path }}
-        run: |
-          curl -L -o fengchi.patch "https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch"
-          git apply --check fengchi.patch
-          git apply fengchi.patch
-
-      # ========== 3. 集成 KernelSU-Next (pershoot分支) ==========
-      - name: Add KernelSU-Next submodule
-        working-directory: ${{ steps.find_kernel.outputs.full_path }}
-        run: |
-          git submodule add https://github.com/pershoot/KernelSU-Next KernelSU-Next
-          cd KernelSU-Next
-          git checkout ${{ github.event.inputs.ksu_branch }}
-          cd ..
-
-      # ========== 4. 工具链准备 ==========
-      - name: Download Clang
-        working-directory: ${{ env.WORK_DIR }}
-        run: |
-          mkdir -p toolchain/clang
-          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/${{ env.CLANG_VERSION }}.tar.gz" | tar -xz -C toolchain/clang
-          echo "${{ env.WORK_DIR }}/toolchain/clang/bin" >> $GITHUB_PATH
-
-      - name: Download GCC
-        working-directory: ${{ env.WORK_DIR }}
-        run: |
-          mkdir -p toolchain/gcc
-          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz" | tar -xz -C toolchain/gcc
-          echo "${{ env.WORK_DIR }}/toolchain/gcc/bin" >> $GITHUB_PATH
-
-      # ========== 5. 配置内核（关键：关闭 KPROBES 实现混合钩子）==========
-      - name: Set environment
-        working-directory: ${{ steps.find_kernel.outputs.full_path }}
-        run: |
-          echo "ARCH=arm64" >> $GITHUB_ENV
-          echo "SUBARCH=arm64" >> $GITHUB_ENV
-          echo "CC=ccache clang" >> $GITHUB_ENV
-          echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
-
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+      - name: 设置 ccache 缓存
+        uses: actions/cache@v4
         with:
-          key: kernel-${{ github.event.inputs.defconfig }}-${{ github.run_id }}
-          max-size: "2G"
+          path: /home/runner/.ccache
+          key: kernel-ccache-${{ github.sha }}
+          restore-keys: kernel-ccache-
 
-      - name: Configure kernel
-        working-directory: ${{ steps.find_kernel.outputs.full_path }}
+      - name: 源码同步
         run: |
-          make ${{ github.event.inputs.defconfig }}
-          # 强制开启 KernelSU
-          echo "CONFIG_KSU=y" >> .config
-          # 混合钩子：关闭 KPROBES
-          if [ "${{ github.event.inputs.hook_type }}" == "Hybridhook" ]; then
-            scripts/config --disable CONFIG_KPROBES
+          mkdir kernel_workspace && cd kernel_workspace
+          git config --global user.email "bot@example.com"
+          git config --global user.name "KernelBot"
+          # 使用你指定的 XML 源码清单
+          repo init -u https://github.com/SHuiTU68/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+
+      - name: 第一步：集成 KSUN 与深度性能优化 (LTO+FDO)
+        run: |
+          # 放弃 find 查找，直接定位到 repo 同步后的内核 common 目录
+          # 根据你的目录结构，内核通常在 kernel 目录下
+          cd kernel_workspace/kernel || cd kernel_workspace
+          
+          # 1. 集成 pershoot-KSUN
+          git clone https://github.com/pershoot/KernelSU-Next ksun_src
+          mkdir -p fs/ksun
+          cp -r ksun_src/kernel/* fs/ksun/
+          echo "obj-y += ksun/" >> fs/Makefile
+          
+          # 2. 混合钩子适配：禁用 KPROBES
+          # 使用通配符定位所有 configs，防止路径偏移
+          find . -name "*defconfig*" -exec sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' {} +
+          
+          # 3. 注入 LTO + FDO 优化参数
+          GKI_CONF=$(find . -name "gki_defconfig" | head -n 1)
+          if [ -n "$GKI_CONF" ]; then
+            echo "CONFIG_LTO_CLANG_FULL=y" >> "$GKI_CONF"
+            echo "CONFIG_PGO_CLANG=y" >> "$GKI_CONF"
+            echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "$GKI_CONF"
           fi
-          # 极速优化：关闭调试信息和 LTO
-          scripts/config --disable DEBUG_INFO
-          scripts/config --disable LTO_CLANG
-          make olddefconfig
 
-      # ========== 6. 编译内核 ==========
-      - name: Build kernel
-        working-directory: ${{ steps.find_kernel.outputs.full_path }}
+      - name: 第二步：执行编译 (全路径锁定)
         run: |
-          time make -j$(nproc) Image.gz
-          # 如果需要 dtb，取消下面注释（但不会打包进 AK3）
-          # make -j$(nproc) dtbs
+          # 寻找编译脚本并直接执行
+          BUILD_SCRIPT=$(find kernel_workspace -name "build_kernel.sh" | head -n 1)
+          cd $(dirname "$BUILD_SCRIPT")
+          chmod +x build_kernel.sh
+          
+          export USE_CCACHE=1
+          export CCACHE_DIR=/home/runner/.ccache
+          ccache -M 10G
+          
+          # 针对一加 Ace 5 Ultra 平台编译
+          ./build_kernel.sh plc110 -j$(nproc)
 
-      # ========== 7. 打包 AnyKernel3 刷机包（仅 boot 分区 + 新版 magiskboot）==========
-      - name: Prepare AnyKernel3 base
-        working-directory: ${{ env.WORK_DIR }}
+      - name: 第三步：AnyKernel3 打包
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel-base
-          mkdir -p anykernel
-          cp -r anykernel-base/META-INF anykernel/
-          cp -r anykernel-base/tools anykernel/
-          cp anykernel-base/LICENSE anykernel/
-
-      - name: Create banner
-        working-directory: ${{ env.WORK_DIR }}/anykernel
-        run: |
-          cat << 'EOF' > banner
-          ************************************
-          *  OnePlus Ace 5 Ultra Kernel      *
-          *  with FengChi & KernelSU-Next     *
-          ************************************
+          git clone https://github.com/osm0sis/AnyKernel3.git AK3
+          find kernel_workspace -name "Image" -exec cp {} AK3/ \;
+          
+          cat <<EOF > AK3/anykernel.sh
+          ### AnyKernel3 Mod Script
+          properties() {
+          kernel.string=PLC110-LTO-FDO-Optimized
+          do.devicecheck=0
+          do.modules=0
+          do.cleanup=1
+          }
+          block=boot;
+          is_slot_device=auto;
+          . tools/ak3-core.sh;
+          split_boot;
+          flash_boot;
           EOF
+          
+          cd AK3 && zip -r ../PLC110-LTO-FDO-$(date +%Y%m%d).zip *
 
-      - name: Copy kernel image
-        working-directory: ${{ steps.find_kernel.outputs.full_path }}
-        run: |
-          if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
-            cp arch/arm64/boot/Image.gz-dtb ${{ env.WORK_DIR }}/anykernel/Image
-          elif [ -f "arch/arm64/boot/Image.gz" ]; then
-            cp arch/arm64/boot/Image.gz ${{ env.WORK_DIR }}/anykernel/Image
-          elif [ -f "arch/arm64/boot/Image" ]; then
-            cp arch/arm64/boot/Image ${{ env.WORK_DIR }}/anykernel/Image
-          fi
-
-       - name: Download and replace magiskboot (latest, fallback to 30.7)
-        working-directory: ${{ env.WORK_DIR }}
-        run: |
-          # 尝试获取最新稳定版 Magisk 下载地址
-          MAGISK_URL=$(curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest | grep "browser_download_url.*apk" | cut -d '"' -f 4)
-          if [ -z "$MAGISK_URL" ]; then
-            echo "Failed to get latest Magisk, using fallback v30.7"
-            MAGISK_URL="https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk"
-          fi
-          wget -O Magisk.apk $MAGISK_URL
-          unzip -j Magisk.apk "lib/arm64-v8a/magiskboot" -d extracted_magiskboot
-          cp extracted_magiskboot/magiskboot anykernel/tools/
-          chmod +x anykernel/tools/magiskboot
-
-      - name: Generate anykernel.sh
-        working-directory: ${{ env.WORK_DIR }}/anykernel
-        run: |
-          cat << 'EOF' > anykernel.sh
-### AnyKernel3 Ramdisk Mod Script
-### osm0sis @ xda-developers
-
-properties() {
-  kernel.string=OnePlus Ace 5 Ultra Kernel (FengChi + KernelSU-Next)
-  do.devicecheck=0
-  do.modules=0
-  do.systemless=0
-  do.cleanup=1
-  do.cleanupjobstart=0
-  device.name1=
-  device.name2=
-  device.name3=
-  device.name4=
-  device.name5=
-  supported.versions=
-  supported.patchlevels=
-  supported.vendorpatchlevels=
-}
-
-### Boot image variables
-block=${{ github.event.inputs.boot_block }};
-is_slot_device=auto;
-ramdisk_compression=auto;
-patch_vbmeta_flag=auto;
-no_magisk_check=1;
-
-# import functions
-. tools/ak3-core.sh
-
-# 开始刷入（只处理 boot 分区）
-dump_boot
-write_boot
-EOF
-
-      - name: Package AK3 zip
-        working-directory: ${{ env.WORK_DIR }}/anykernel
-        run: |
-          zip -r9 ../AnyKernel3_OnePlus_Ace5_Ultra.zip * -x .git README.md
-
-      - name: Upload AK3 package
+      - name: 上传刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: AnyKernel3-OnePlus-Ace5-Ultra
-          path: AnyKernel3_OnePlus_Ace5_Ultra.zip
-```
+          name: PLC110-Optimized-Kernel
+          path: "*.zip"
