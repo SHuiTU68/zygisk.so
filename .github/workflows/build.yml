@@ -1,4 +1,4 @@
-name: Build PLC110 Kernel (Pershoot KSUN Hybrid 6.6)
+name: Build PLC110 Optimized (KSUN Hybrid & Fengchi)
 
 on:
   workflow_dispatch:
@@ -7,102 +7,112 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 环境准备与安装 Repo
+      - name: 环境准备与编译增强工具
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu git git-lfs gnupg gperf libncurses5-dev libssl-dev python3 rsync zip curl
+          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu git git-lfs gnupg gperf libncurses5-dev libssl-dev python3 rsync zip curl ccache
           mkdir -p ~/bin
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
+
+      # 设置 ccache 缓存，第二次编译可节省 70% 时间
+      - name: 设置 ccache 缓存
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.ccache
+          key: kernel-ccache-${{ github.sha }}
+          restore-keys: kernel-ccache-
 
       - name: 源码同步
         run: |
           mkdir kernel && cd kernel
           git config --global user.email "bot@example.com"
           git config --global user.name "KernelBot"
-          # 使用你指定的一加 Ace 5 Ultra XML 清单
           repo init -u https://github.com/SHuiTU68/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 第一步：集成 pershoot-KSUN (手动链接模式)
+      - name: 第一步：集成 pershoot-KSUN 并开启 LTO 优化
         run: |
           cd kernel
-          # 动态定位内核源码根目录
           REAL_SOURCE_DIR=$(find . -maxdepth 3 -name "Makefile" -exec grep -l "VERSION =" {} \; | head -n 1 | xargs dirname)
           cd $REAL_SOURCE_DIR
           
-          # 克隆 pershoot 的 KernelSU-Next 分支
+          # 集成 pershoot-KSUN
           git clone https://github.com/pershoot/KernelSU-Next ksun_src
-          
-          # 手动集成：将 ksun 源码放入 fs 目录 (常用集成方式)
           mkdir -p fs/ksun
           cp -r ksun_src/kernel/* fs/ksun/
-          
-          # 修改 fs/Makefile 启用编译
           echo "obj-y += ksun/" >> fs/Makefile
           
-          # 【核心配置】禁用 KPROBES 以启用混合钩子
+          # 【核心】禁用 KPROBES 适配混合钩子
           find arch/arm64/configs/ -name "*defconfig*" -exec sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' {} +
-          [ -f arch/arm64/configs/gki_defconfig ] && sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KPROBES=n" >> arch/arm64/configs/gki_defconfig
+          
+          # 【新增】写入优化参数：Full LTO + 性能优先
+          {
+            echo "CONFIG_LTO_CLANG_FULL=y"
+            echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y"
+            echo "CONFIG_CC_WERROR=n"
+          } >> arch/arm64/configs/gki_defconfig
 
       - name: 第二步：应用风驰补丁
         run: |
           cd kernel
           REAL_SOURCE_DIR=$(find . -maxdepth 3 -name "Makefile" -exec grep -l "VERSION =" {} \; | head -n 1 | xargs dirname)
           cd $REAL_SOURCE_DIR
-          
-          # 下载并应用风驰 patch
           wget https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          git apply fengchi.patch || echo "Patch applied with warnings"
+          git apply fengchi.patch || echo "Patch applied"
 
-      - name: 第三步：执行编译
+      - name: 第三步：执行优化编译 (ccache + 并行)
         run: |
           cd kernel
+          BUILD_SCRIPT_PATH=$(find . -name "build_kernel.sh" | head -n 1)
+          cd $(dirname "$BUILD_SCRIPT_PATH")
           chmod +x build_kernel.sh
-          # 针对一加 Ace 5 Ultra 平台编译
-          ./build_kernel.sh plc110
+          
+          # 配置 ccache
+          export USE_CCACHE=1
+          export CCACHE_DIR=/home/runner/.ccache
+          ccache -M 5G
+          
+          # 开始编译，使用所有核心加速
+          ./build_kernel.sh plc110 -j$(nproc)
 
-      - name: 第四步：AnyKernel3 自动化打包
+      - name: 第四步：AnyKernel3 自动化打包 (带 6.6 版本判定)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          # 寻找编译生成的 Image 并放入打包目录
-          find kernel/out -name "Image" -exec cp {} AK3/ \;
+          find kernel -name "Image" -exec cp {} AK3/ \;
           
           # 还原 anykernel.sh 判定逻辑
           cat <<EOF > AK3/anykernel.sh
-          ### AnyKernel3 Ramdisk Mod Script
+          ### AnyKernel3 Mod Script
           properties() {
-          kernel.string=Wild Kernels (Pershoot KSUN Hybrid 6.6)
+          kernel.string=Wild Kernels PLC110 (Optimized Pershoot KSUN 6.6)
           do.devicecheck=0
           do.modules=0
           do.systemless=0
           do.cleanup=1
-          do.cleanuponabort=0
           }
           block=boot;
           is_slot_device=auto;
           . tools/ak3-core.sh;
           
-          # 内核版本判定 (支持 6.6)
           kernel_version=\$(cat /proc/version | awk -F '-' '{print \$1}' | awk '{print \$3}')
           case \$kernel_version in
             5.1*|6.1*|6.6*) ksu_supported=true ;;
             *) ksu_supported=false ;;
           esac
           
-          ui_print "-> Wild Kernels Supported: \$ksu_supported"
-          \$ksu_supported || abort "-> Unsupported GKI version!"
+          ui_print "-> KSUN Supported: \$ksu_supported"
+          \$ksu_supported || abort "-> Unsupported version!"
           
           split_boot;
           flash_boot;
           EOF
           
-          cd AK3 && zip -r ../PLC110-KSUN-Hybrid.zip *
+          cd AK3 && zip -r ../PLC110-KSUN-$(date +%Y%m%d).zip *
 
       - name: 上传刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-Kernel-Result
-          path: PLC110-KSUN-Hybrid.zip
+          name: PLC110-Optimized-Kernel
+          path: "*.zip"
