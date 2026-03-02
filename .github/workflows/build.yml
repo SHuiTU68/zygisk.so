@@ -1,4 +1,4 @@
-name: Build PLC110 Kernel (pershoot-KSUN)
+name: Build PLC110 Kernel (Pershoot KSUN Hybrid)
 
 on:
   workflow_dispatch:
@@ -25,87 +25,74 @@ jobs:
           repo init -u https://github.com/SHuiTU68/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 集成 pershoot/KernelSU-Next
+      - name: 集成 Pershoot KSUN 与风驰补丁
         run: |
-          cd kernel/common
-          # 手动克隆 pershoot 的 KSUN 分支到指定目录
+          # 修复路径问题：进入 repo 同步后的内核根目录
+          cd kernel/common || cd kernel/android-kernel || exit 1
+          
+          # 克隆 pershoot 的 KSUN 分支 (支持 Hybrid Hook)
           git clone https://github.com/pershoot/KernelSU-Next KernelSU-Next
-          # 运行该分支的集成脚本（如果该库有 setup.sh，或者手动链接）
-          # 这里采用该分支推荐的集成方式
           cp -r KernelSU-Next/kernel/* ./kernel/
           cp -r KernelSU-Next/drivers/* ./drivers/
-
-      - name: 应用风驰补丁并处理 KPROBES 冲突
-        run: |
-          cd kernel/common
+          
           # 下载并应用风驰 patch
           wget https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
           git apply fengchi.patch || echo "Patch applied with warnings"
           
-          # 根据截图核心建议：关闭内核的 kprobes 以适应 Hybrid hook
+          # 【核心】根据截图建议：禁用 KPROBES 以启用混合钩子
           find arch/arm64/configs/ -name "*defconfig*" -exec sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' {} +
-          # 确保在 GKI 配置中也强制关闭
-          echo "CONFIG_KPROBES=n" >> arch/arm64/configs/gki_defconfig
+          [ -f arch/arm64/configs/gki_defconfig ] && sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' arch/arm64/configs/gki_defconfig
 
       - name: 执行编译
         run: |
           cd kernel
           chmod +x build_kernel.sh
-          # 针对一加 Ace 5 Ultra (PLC110) 编译
+          # 针对一加 Ace 5 Ultra 编译
           ./build_kernel.sh plc110
 
-      - name: AnyKernel3 自动化打包 (复刻截图逻辑)
+      - name: AnyKernel3 自动化打包
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          # 复制生成的 Image
-          cp kernel/out/arch/arm64/boot/Image AK3/
+          # 复制生成的 Image 镜像
+          if [ -f kernel/out/arch/arm64/boot/Image ]; then
+            cp kernel/out/arch/arm64/boot/Image AK3/
+          else
+            find kernel/out -name "Image" -exec cp {} AK3/ \;
+          fi
           
-          # 编写符合截图要求的 anykernel.sh
+          # 还原 anykernel.sh 判定逻辑
           cat <<EOF > AK3/anykernel.sh
           ### AnyKernel3 Ramdisk Mod Script
           properties() {
-          kernel.string=Wild Kernels by TheWildJames (Pershoot-KSUN)
+          kernel.string=Wild Kernels (Pershoot KSUN Hybrid 6.6)
           do.devicecheck=0
           do.modules=0
           do.systemless=0
           do.cleanup=1
           do.cleanuponabort=0
           }
-          
           block=boot;
           is_slot_device=auto;
-          ramdisk_compression=auto;
-          patch_vbmeta_flag=auto;
-          no_magisk_check=1;
-          
           . tools/ak3-core.sh;
           
-          # 内核版本检测逻辑，确保是 GKI
+          # 核心版本检测
           kernel_version=\$(cat /proc/version | awk -F '-' '{print \$1}' | awk '{print \$3}')
           case \$kernel_version in
-            5.1*) ksu_supported=true ;;
-            6.1*) ksu_supported=true ;;
-            6.6*) ksu_supported=true ;;
+            5.1*|6.1*|6.6*) ksu_supported=true ;;
             *) ksu_supported=false ;;
           esac
           
-          ui_print " "
           ui_print "-> Wild Kernels Supported: \$ksu_supported"
-          \$ksu_supported || abort "-> Non-GKI device, abort."
+          \$ksu_supported || abort "-> Unsupported GKI version!"
           
           split_boot;
-          if [ -f "split_img/ramdisk.cpio" ]; then
-            unpack_ramdisk;
-            write_boot;
-          else
-            flash_boot;
-          fi
+          flash_boot;
           EOF
           
-          cd AK3 && zip -r ../PLC110-Pershoot-KSUN.zip *
+          cd AK3 && zip -r ../PLC110-Kernel-KSUN.zip *
 
       - name: 上传刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-Pershoot-KSUN-Package
-          path: PLC110-Pershoot-KSUN.zip
+          name: PLC110-Pershoot-KSUN
+          path: PLC110-Kernel-KSUN.zip
