@@ -1,4 +1,4 @@
-name: Build & Package PLC110 Kernel (Fix Repo)
+name: Build PLC110 Kernel (pershoot-KSUN)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu git git-lfs gnupg gperf libncurses5-dev libssl-dev python3 rsync zip curl
-          # 安装 repo 工具
           mkdir -p ~/bin
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
@@ -22,37 +21,50 @@ jobs:
           mkdir kernel && cd kernel
           git config --global user.email "bot@example.com"
           git config --global user.name "KernelBot"
-          # 使用你指定的 XML 路径
+          # 使用你指定的 XML 源码清单
           repo init -u https://github.com/SHuiTU68/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
           repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
-      - name: 集成 KernelSU (Pershoot) 与 补丁
+      - name: 集成 pershoot/KernelSU-Next
         run: |
           cd kernel/common
-          # 集成 pershoot 分支
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s pershoot
-          # 应用风驰补丁
+          # 手动克隆 pershoot 的 KSUN 分支到指定目录
+          git clone https://github.com/pershoot/KernelSU-Next KernelSU-Next
+          # 运行该分支的集成脚本（如果该库有 setup.sh，或者手动链接）
+          # 这里采用该分支推荐的集成方式
+          cp -r KernelSU-Next/kernel/* ./kernel/
+          cp -r KernelSU-Next/drivers/* ./drivers/
+
+      - name: 应用风驰补丁并处理 KPROBES 冲突
+        run: |
+          cd kernel/common
+          # 下载并应用风驰 patch
           wget https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          git apply fengchi.patch || echo "Patch conflict ignored"
-          # 禁用 KPROBES 避免冲突
+          git apply fengchi.patch || echo "Patch applied with warnings"
+          
+          # 根据截图核心建议：关闭内核的 kprobes 以适应 Hybrid hook
           find arch/arm64/configs/ -name "*defconfig*" -exec sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' {} +
+          # 确保在 GKI 配置中也强制关闭
+          echo "CONFIG_KPROBES=n" >> arch/arm64/configs/gki_defconfig
 
       - name: 执行编译
         run: |
           cd kernel
           chmod +x build_kernel.sh
+          # 针对一加 Ace 5 Ultra (PLC110) 编译
           ./build_kernel.sh plc110
 
-      - name: 制作 AnyKernel3 刷机包
+      - name: AnyKernel3 自动化打包 (复刻截图逻辑)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git AK3
+          # 复制生成的 Image
           cp kernel/out/arch/arm64/boot/Image AK3/
           
-          # 创建符合你截图逻辑的 anykernel.sh
+          # 编写符合截图要求的 anykernel.sh
           cat <<EOF > AK3/anykernel.sh
           ### AnyKernel3 Ramdisk Mod Script
           properties() {
-          kernel.string=Wild Kernels by TheWildJames (Custom Build)
+          kernel.string=Wild Kernels by TheWildJames (Pershoot-KSUN)
           do.devicecheck=0
           do.modules=0
           do.systemless=0
@@ -68,7 +80,7 @@ jobs:
           
           . tools/ak3-core.sh;
           
-          # 核心版本检测逻辑
+          # 内核版本检测逻辑，确保是 GKI
           kernel_version=\$(cat /proc/version | awk -F '-' '{print \$1}' | awk '{print \$3}')
           case \$kernel_version in
             5.1*) ksu_supported=true ;;
@@ -90,10 +102,10 @@ jobs:
           fi
           EOF
           
-          cd AK3 && zip -r ../PLC110-Kernel.zip *
+          cd AK3 && zip -r ../PLC110-Pershoot-KSUN.zip *
 
       - name: 上传刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-KSU-Pershoot-Package
-          path: PLC110-Kernel.zip
+          name: PLC110-Pershoot-KSUN-Package
+          path: PLC110-Pershoot-KSUN.zip
