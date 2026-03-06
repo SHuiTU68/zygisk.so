@@ -1,4 +1,4 @@
-name: Ace5U mt6991 Hybrid Source Build
+name: Ace5U mt6991 One-Step Build
 on:
   workflow_dispatch:
 
@@ -10,63 +10,47 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm \
-          python3 python-is-python3 zip git-lfs pahole curl repo
+          python3 python-is-python3 zip git-lfs pahole curl
 
-      - name: 2️⃣ 混合同步：Fork 源码 + 清单附加件
+      - name: 2️⃣ 拉取内核源码与编译器 (一步到位)
         run: |
-          mkdir -p $GITHUB_WORKSPACE/project && cd $GITHUB_WORKSPACE/project
-          git config --global user.name "hubai7285-code"
-          git config --global user.email "hubai7285@gmail.com"
+          mkdir -p $GITHUB_WORKSPACE/build && cd $GITHUB_WORKSPACE/build
           
-          # A. 按照你的要求：直接拉取你 Fork 的内核源码仓库
-          echo "🚚 正在拉取你的 Fork 内核源码..."
+          # 直接拉取你的 Fork 仓库核心分支
+          echo "🚚 正在拉取内核源码..."
           git clone --depth=1 -b oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra \
-          https://github.com/hubai7285-code/android_kernel_oneplus_mt6991v1.git kernel-6.6
-
-          # B. 使用 repo 只同步清单中的附加件 (编译器、工具链)
-          echo "🛠️ 正在初始化清单以拉取附加组件..."
-          repo init -u https://github.com/hubai7285-code/OnePlus_KernelSU_SUSFS.git \
-                    -b main \
-                    -m manifests/oos16/oneplus_ace5_ultra_w.xml \
-                    --no-repo-verify --depth=1
+          https://github.com/hubai7285-code/android_kernel_oneplus_mt6991v1.git common
           
-          # 强制排除 kernel-6.6 仓库的同步，只同步清单里的其他 project (如 Clang 和 Build Tools)
-          repo sync -c -j$(nproc --all) --force-sync --no-tags --no-clone-bundle
-
-      - name: 3️⃣ 环境布局与路径锁定
-        run: |
-          cd $GITHUB_WORKSPACE/project
-          # 创建清单要求的软链接逻辑
-          mkdir -p kernel_platform
-          ln -s $(pwd)/kernel-6.6 $(pwd)/kernel_platform/common
+          # 下载适配 6.6 内核的官方 Clang 工具链 (跳过清单，直接拉取)
+          echo "🛠️ 正在下载编译器..."
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 prebuilts/clang
           
-          echo "KERNEL_ROOT=$(pwd)/kernel-6.6" >> $GITHUB_ENV
-          echo "✅ 源码路径已锁定: $(pwd)/kernel-6.6"
+          echo "KERNEL_ROOT=$GITHUB_WORKSPACE/build/common" >> $GITHUB_ENV
+          echo "CLANG_PATH=$GITHUB_WORKSPACE/build/prebuilts/clang/bin" >> $GITHUB_ENV
 
-      - name: 4️⃣ 注入通用风驰补丁与 Pershoot KSU (Hybrid Hook)
+      - name: 3️⃣ 注入风驰补丁与 Pershoot KSU (不改动仓库)
         run: |
           cd ${{ env.KERNEL_ROOT }}
           
-          # 应用风驰补丁 (不改动你的远程仓库)
+          # 应用通用风驰补丁
           curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
           git apply --ignore-whitespace fengchi.patch || patch -p1 < fengchi.patch
           
           # 集成 Pershoot KSU-Next (混合钩子模式)
+          # 对于 6.6 内核，这是实现 KernelSU 的最佳方案
           rm -rf drivers/kernelsu
           git clone https://github.com/pershoot/KernelSU-Next drivers/kernelsu
           
-          # 动态修正 Kconfig 引用
+          # 动态修正内核配置引用
           grep -q "kernelsu" drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           grep -q "kernelsu" drivers/Makefile || echo "obj-y += kernelsu/" >> drivers/Makefile
 
-      - name: 5️⃣ 开启高性能编译配置 (O2 + Kprobes)
+      - name: 4️⃣ 配置与高性能编译 (O2 + Kprobes)
         run: |
           cd ${{ env.KERNEL_ROOT }}
-          # 使用清单同步下来的 Clang
-          CLANG_BIN=$GITHUB_WORKSPACE/project/kernel_platform/prebuilts/clang/host/linux-x86/bin
-          export PATH=$CLANG_BIN:$PATH
+          export PATH=${{ env.CLANG_PATH }}:$PATH
           
-          # 天玑 9400 默认 GKI 配置
+          # 使用默认 GKI 配置
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
 
@@ -74,25 +58,26 @@ jobs:
           ./scripts/config --file out/.config --enable CONFIG_KPROBES
           ./scripts/config --file out/.config --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
           ./scripts/config --file out/.config --enable CONFIG_KSU
-
-      - name: 6️⃣ 执行编译与打包
-        run: |
-          cd ${{ env.KERNEL_ROOT }}
-          CLANG_BIN=$GITHUB_WORKSPACE/project/kernel_platform/prebuilts/clang/host/linux-x86/bin
-          export PATH=$CLANG_BIN:$PATH
           
+          # 执行编译
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
-               CROSS_COMPILE=aarch64-linux-gnu- KCFLAGS="-O2"
-          
-          # 打包 AnyKernel3
+               CROSS_COMPILE=aarch64-linux-gnu- KCFLAGS="-O2 -pipe"
+
+      - name: 5️⃣ AnyKernel3 自动化打包
+        run: |
           cd $GITHUB_WORKSPACE
           git clone https://github.com/osm0sis/AnyKernel3
+          
+          # 定位编译生成的 Image 文件
           IMG_PATH=$(find ${{ env.KERNEL_ROOT }}/out -name "Image" -type f | head -n 1)
+          if [ -z "$IMG_PATH" ]; then echo "❌ 编译失败，未生成镜像文件！" && exit 1; fi
+          
           cp $IMG_PATH AnyKernel3/
-          cd AnyKernel3 && zip -r9 ../Ace5U-mt6991-Result.zip *
+          cd AnyKernel3
+          zip -r9 ../Ace5U-mt6991-Standard.zip *
 
-      - name: 7️⃣ 上传结果
+      - name: 6️⃣ 上传内核刷入包
         uses: actions/upload-artifact@v4
         with:
-          name: Ace5U-Hybrid-Kernel
-          path: Ace5U-mt6991-Result.zip
+          name: Ace5U-Final-Kernel
+          path: Ace5U-mt6991-Standard.zip
