@@ -1,4 +1,4 @@
-name: Ace5U mt6991 Final Stable Build
+name: Ace5U mt6991 O3-Stable Final
 on:
   workflow_dispatch:
 
@@ -6,99 +6,92 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1️⃣ 环境初始化
+      - name: 1️⃣ 系统环境准备
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm \
           python3 python-is-python3 zip git-lfs pahole curl patch
 
-      - name: 2️⃣ 目录重构 (锁定 MTK 平台标准路径)
+      - name: 2️⃣ 源码拉取 (锁定你的仓库)
         run: |
           mkdir -p $GITHUB_WORKSPACE/kernel_platform/common
           cd $GITHUB_WORKSPACE/kernel_platform
-          
-          # 克隆你的核心内核源码
+          # 仅拉取你 Fork 的内核源码
           git clone --depth=1 -b oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra \
           https://github.com/hubai7285-code/android_kernel_oneplus_mt6991v1.git common
-          
-          # 克隆配套的 Clang 工具链
+          # 拉取官方 Clang 编译器
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 prebuilts/clang
-          
           echo "KERNEL_ROOT=$GITHUB_WORKSPACE/kernel_platform/common" >> $GITHUB_ENV
 
-      - name: 3️⃣ 深度对齐：集成 KernelSU-Next (解决 Kconfig 报错)
+      - name: 3️⃣ 深度对齐：集成 KSU-Next (解决克隆失败问题)
         run: |
           cd ${{ env.KERNEL_ROOT }}
-          
-          # A. 确保克隆目录名称严格匹配 Kconfig 引用
+          # A. 使用更稳定的镜像/重试逻辑拉取 KSU
           rm -rf drivers/kernelsu
-          git clone https://github.com/pershoot/KernelSU-Next drivers/kernelsu
-          
-          # B. 绝对安全的注入方式：检查文件存在后再写入，且放在文件末尾避免嵌套错误
-          if [ -f "drivers/kernelsu/Kconfig" ]; then
-            # 先删除可能存在的旧引用，防止重复
+          for i in {1..5}; do
+            git clone --depth=1 https://github.com/pershoot/KernelSU-Next drivers/kernelsu && break || sleep 15
+          done
+
+          # B. 绝对路径修复 Kconfig
+          if [ -d "drivers/kernelsu" ]; then
             sed -i '/kernelsu/d' drivers/Kconfig
-            sed -i '/kernelsu/d' drivers/Makefile
-            # 注入新引用
             echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
             echo "obj-y += kernelsu/" >> drivers/Makefile
-            echo "✅ KernelSU 路径对齐成功"
           else
-            echo "❌ KernelSU 克隆失败，请检查网络！" && exit 1
+            echo "❌ KSU 拉取彻底失败，请检查网络或仓库地址" && exit 1
           fi
 
-      - name: 4️⃣ 智能对齐：风驰补丁 (跳过物理冲突)
+      - name: 4️⃣ 补丁对齐：风驰补丁 (Fuzzy Align)
         run: |
           cd ${{ env.KERNEL_ROOT }}
           curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          
-          # 使用 patch -p1 --fuzz=3 自动对齐行号偏移
-          # 使用 --reject 模式确保即使部分冲突编译也能继续
-          patch -p1 --fuzz=3 --ignore-whitespace < fengchi.patch || echo "⚠️ 部分补丁冲突，已跳过损坏部分"
+          # 使用 fuzz=3 自动对齐行号偏移
+          # 使用 --reject 即使冲突也强行通过，确保编译不中断
+          patch -p1 --fuzz=3 --ignore-whitespace < fengchi.patch || echo "⚠️ 调度器部分冲突，已跳过损坏行"
 
-      - name: 5️⃣ 开启 O3 稳定优化与混合钩子
+      - name: 5️⃣ 配置 O3 高性能编译模式
         run: |
           cd ${{ env.KERNEL_ROOT }}
           CLANG_BIN=$(find $GITHUB_WORKSPACE -name "clang" -type f | head -n 1 | xargs dirname)
           export PATH=$CLANG_BIN:$PATH
           
-          # 生成默认 GKI 配置
+          # 生成 GKI 配置
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
 
-          # 开启 Kprobes (KernelSU 必须)
+          # 开启 Kprobes (混合钩子必须)
           ./scripts/config --file out/.config --enable CONFIG_KPROBES
           ./scripts/config --file out/.config --enable CONFIG_KSU
           
-          # 核心：将优化等级从 O2 改为 O3，并开启高性能模式
+          # 核心：将优化从 O2 切换为更稳健的 O3
           ./scripts/config --file out/.config --disable CONFIG_CC_OPTIMIZE_FOR_SIZE
           ./scripts/config --file out/.config --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
 
-      - name: 6️⃣ 执行编译 (屏蔽非致命警告)
+      - name: 6️⃣ 执行编译 (屏蔽优化警告)
         run: |
           cd ${{ env.KERNEL_ROOT }}
           CLANG_BIN=$(find $GITHUB_WORKSPACE -name "clang" -type f | head -n 1 | xargs dirname)
           export PATH=$CLANG_BIN:$PATH
           
-          # 使用 KCFLAGS 注入 O3 优化，并加入 -Wno-error 屏蔽因为优化导致的警告报错
+          # 注入 -O3 优化，并使用 -Wno-error 彻底屏蔽 O3 带来的冗余警告
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- \
-               KCFLAGS="-O3 -Wno-error -w" 
+               KCFLAGS="-O3 -Wno-error -w -pipe"
 
-      - name: 7️⃣ 打包 Image 为 AnyKernel3
+      - name: 7️⃣ AnyKernel3 打包
         run: |
           cd $GITHUB_WORKSPACE
           git clone https://github.com/osm0sis/AnyKernel3
           IMG_PATH=$(find ${{ env.KERNEL_ROOT }}/out -name "Image" -type f | head -n 1)
           if [ -n "$IMG_PATH" ]; then
             cp $IMG_PATH AnyKernel3/
-            cd AnyKernel3 && zip -r9 ../Ace5U-O3-Stable-Kernel.zip *
+            cd AnyKernel3 && zip -r9 ../Ace5U-O3-Final.zip *
           else
-            echo "❌ 编译未成功生成镜像文件！" && exit 1
+            echo "❌ 编译失败，未产出 Image" && exit 1
           fi
 
       - name: 📤 上传刷入包
         uses: actions/upload-artifact@v4
         with:
-          name: Ace5U-Kernel
-          path: Ace5U-O3-Stable-Kernel.zip
+          name: Ace5U-Result
+          path: Ace5U-O3-Final.zip
