@@ -6,21 +6,27 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1️⃣ 环境初始化 (增强版)
+      - name: 1️⃣ 环境初始化 (修正参数错误)
         run: |
           sudo apt-get update
-          sudo apt-get install -p -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm \
-          python3 python-is-python3 zip git-lfs pahole curl repo
-          # 确保使用最新的 repo 脚本
+          # 移除了错误的 -p 参数，确保环境顺利安装
+          sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm \
+          python3 python-is-python3 zip git-lfs pahole curl
+          
+          # 安装并强制配置最新版 repo
           mkdir -p ~/bin
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
-      - name: 2️⃣ 智能同步源码 (修正 Manifest 逻辑)
+      - name: 2️⃣ 智能同步源码 (解决 Manifest 丢失问题)
         run: |
           mkdir build && cd build
-          # 直接在一次 init 中完成所有指向，避免 secondary init 失败
+          # 配置 Git 身份，防止 repo 同步时报错
+          git config --global user.email "you@example.com"
+          git config --global user.name "Your Name"
+          
+          # 核心修复：直接在初始化时通过 -m 锁定 XML 路径，避免 repo 回退到 default.xml
           repo init -u https://github.com/hubai7285-code/OnePlus_KernelSU_SUSFS.git \
                     -b main \
                     -m oos16/oneplus_ace5_ultra_w.xml \
@@ -29,76 +35,57 @@ jobs:
           # 强制同步
           repo sync -c -j$(nproc --all) --force-sync --no-tags --no-clone-bundle
 
-      - name: 3️⃣ 应用风驰 (Fengchi) 补丁与注入 KSU-Next
+      - name: 3️⃣ 注入混合钩子 (Hybrid Hook) 与风驰补丁
         run: |
           cd build/common
-          # 下载并强制合入风驰游戏优化补丁
-          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          git apply --ignore-whitespace --verbose fengchi.patch || patch -p1 < fengchi.patch
-          
           # 集成 Pershoot 混合钩子分支
-          # 根据你的需求：6.6 内核不关闭 Kprobes 以实现 Hybrid 模式
+          # 根据图片要求：编译阶段决定 Hook 模式，pershoot 分支即为 Hybrid hook
           rm -rf drivers/kernelsu
           git clone https://github.com/pershoot/KernelSU-Next drivers/kernelsu
           
-          # 注入内核编译规则
+          # 注入风驰游戏优化补丁
+          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
+          git apply --ignore-whitespace --verbose fengchi.patch || patch -p1 < fengchi.patch
+          
+          # 配置 Kconfig 和 Makefile
           [ ! -f drivers/Kconfig ] && touch drivers/Kconfig
-          if ! grep -q "kernelsu" drivers/Kconfig; then
-            sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          fi
-          if ! grep -q "kernelsu" drivers/Makefile; then
-            echo "obj-y += kernelsu/" >> drivers/Makefile
-          fi
+          grep -q "kernelsu" drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          grep -q "kernelsu" drivers/Makefile || echo "obj-y += kernelsu/" >> drivers/Makefile
 
-      - name: 4️⃣ 开启 O2 优化与内核配置
+      - name: 4️⃣ 开启 O2 性能优化与配置
         run: |
           cd build
-          # 6.6 GKI 通常在 prebuilts 下自带 Clang
+          # 使用自带编译链路径
           export PATH=$GITHUB_WORKSPACE/build/prebuilts/clang/host/linux-x86/clang-r487747c/bin:$PATH
           
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
 
-          # 强制开启高性能 O2 优化
+          # 强制开启 O2 性能优化与 Kprobes (用于 Hybrid 模式)
           ./scripts/config --file out/.config --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
           ./scripts/config --file out/.config --disable CONFIG_CC_OPTIMIZE_FOR_SIZE
-          
-          # 确保 Kprobes 开启以支持 Pershoot 的混合钩子
           ./scripts/config --file out/.config --enable CONFIG_KPROBES
-          ./scripts/config --file out/.config --enable CONFIG_KPROBE_EVENTS
           ./scripts/config --file out/.config --enable CONFIG_KALLSYMS_ALL
 
-      - name: 5️⃣ 执行 O2 高性能编译
+      - name: 5️⃣ 执行编译 (注入 O2 参数)
         run: |
           cd build
           export PATH=$GITHUB_WORKSPACE/build/prebuilts/clang/host/linux-x86/clang-r487747c/bin:$PATH
           
-          # 注入 KCFLAGS 确保全局 O2 优化
           make -j$(nproc --all) O=out ARCH=arm64 \
                CC=clang LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- \
                KCFLAGS="-O2 -pipe -ftree-vectorize"
 
-      - name: 6️⃣ AnyKernel3 纯净打包 (只替换 Boot)
+      - name: 6️⃣ AnyKernel3 纯净打包 (只换 Boot)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3
-          if [ -f build/out/arch/arm64/boot/Image ]; then
-            cp build/out/arch/arm64/boot/Image AnyKernel3/
-          else
-            echo "❌ 编译产物 Image 缺失！" && exit 1
-          fi
+          cp build/out/arch/arm64/boot/Image AnyKernel3/
           
           cd AnyKernel3
-          # 锁定 boot 分区，绝不触碰 dtbo
-          cat <<EOF > anykernel.sh
-          properties() { '
-          kernel.string=Ace5U-Fengchi-Hybrid-O2
-          do.devicecheck=1
-          do.modules=0
-          do.systemless=1
-          do.cleanup=1
-          device.name1=OnePlusAce5Ultra
-          '; }
+          # 锁定机型代号，只替换 boot 确保不碰 dtbo
+          sed -i 's/device.name1=.*/device.name1=OnePlusAce5Ultra/' anykernel.sh
+          cat <<EOF >> anykernel.sh
           block=/dev/block/by-name/boot;
           is_slot_device=1;
           . /tmp/anykernel/tools/ak3-core.sh;
@@ -106,10 +93,10 @@ jobs:
           flash_boot;
           EOF
           
-          zip -r9 ../Ultimate_Kernel_Ace5U.zip *
+          zip -r9 ../Ace5U-Fengchi-Hybrid.zip *
 
-      - name: 7️⃣ 上传刷入包
+      - name: 7️⃣ 上传结果
         uses: actions/upload-artifact@v4
         with:
-          name: Ace5U-Fengchi-Kernel
-          path: Ultimate_Kernel_Ace5U.zip
+          name: Ace5U-Ultimate-Kernel
+          path: Ace5U-Fengchi-Hybrid.zip
