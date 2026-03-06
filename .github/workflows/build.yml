@@ -6,19 +6,44 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1️⃣ 环境初始化
+       - name: 1️⃣ 环境初始化 (增强版)
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm \
-          python3 python-is-python3 repo zip git-lfs pahole curl
+          python3 python-is-python3 zip git-lfs pahole curl
+          # 下载最新的 repo 脚本，避免系统自带版本过旧无法解析子目录
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
 
-      - name: 2️⃣ 同步源码 (基于你的 Manifest)
+      - name: 2️⃣ 同步 OnePlus 源码 (带路径自动修复)
         run: |
           mkdir build && cd build
-          repo init -u https://github.com/hubai7285-code/OnePlus_KernelSU_SUSFS.git \
-                    -b main \
-                    -m oos16/oneplus_ace5_ultra_w.xml
+          # 1. 先初始化仓库根目录
+          repo init -u https://github.com/hubai7285-code/OnePlus_KernelSU_SUSFS.git -b main --no-repo-verify
+          
+          # 2. 自动探测 XML 的准确位置
+          # 我们先将 manifest 仓库克隆下来看一下结构（仅用于确认路径）
+          git clone https://github.com/hubai7285-code/OnePlus_KernelSU_SUSFS.git temp_manifest
+          
+          echo "🔍 正在查找 XML 准确路径..."
+          # 在仓库中搜索 oneplus_ace5_ultra_w.xml
+          REAL_PATH=$(find temp_manifest -name "oneplus_ace5_ultra_w.xml" | sed 's|temp_manifest/||')
+          
+          if [ -z "$REAL_PATH" ]; then
+            echo "❌ 错误：在仓库中找不到 oneplus_ace5_ultra_w.xml，请检查文件名是否正确！"
+            exit 1
+          fi
+          
+          echo "✅ 找到路径：$REAL_PATH"
+          
+          # 3. 使用找到的准确路径重新初始化并同步
+          repo init -m "$REAL_PATH"
           repo sync -c -j$(nproc --all) --force-sync --no-tags --no-clone-bundle
+          
+          # 清理临时文件夹
+          rm -rf temp_manifest
 
       - name: 3️⃣ 注入风驰 (Fengchi) 游戏内核补丁
         run: |
