@@ -1,4 +1,4 @@
-name: OnePlus Ace 5 Ultra Ultimate Build
+name: OnePlus Ace 5 Ultra Ultimate Hybrid Build
 on:
   workflow_dispatch:
 
@@ -9,85 +9,101 @@ jobs:
       - name: 1️⃣ 环境初始化
         run: |
           sudo apt-get update
-          # 确保安装所有必要依赖，已移除之前报错的 -p 参数
           sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm \
           python3 python-is-python3 zip git-lfs pahole curl repo
-          
-          # 强制安装最新 repo 脚本以解决 launcher 不可写的问题
           mkdir -p ~/bin
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
-      - name: 2️⃣ 同步源码 (注入你的清单与身份)
+      - name: 2️⃣ 同步源码 (基于 hubai7285 身份)
         run: |
           mkdir build && cd build
-          # 注入你提供的身份信息，防止 repo sync 报错
           git config --global user.name "hubai7285-code"
           git config --global user.email "hubai7285@gmail.com"
-          
-          # 直接定位到你仓库中的具体清单文件
+          # 直接定位到 oos16 的清单文件
           repo init -u https://github.com/hubai7285-code/OnePlus_KernelSU_SUSFS.git \
                     -b main \
                     -m manifests/oos16/oneplus_ace5_ultra_w.xml \
                     --no-repo-verify --depth=1
-          
-          # 执行同步
           repo sync -c -j$(nproc --all) --force-sync --no-tags --no-clone-bundle
 
-      - name: 3️⃣ 应用风驰补丁与 Pershoot 混合钩子
+      - name: 3️⃣ 集成补丁 (风驰 + Pershoot Hybrid + SUSFS)
         run: |
-          cd build/common
-          # 拉取并应用风驰游戏内核补丁
-          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          git apply --ignore-whitespace --verbose fengchi.patch || patch -p1 < fengchi.patch
+          cd build/common 
           
-          # 集成 Pershoot KSU-Next 混合钩子分支
-          # 注意：pershoot 分支本身就是 Hybrid hook
+          # A. 应用风驰游戏内核补丁 (sm8750 优化)
+          echo "📥 应用风驰优化补丁..."
+          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
+          git apply --ignore-whitespace fengchi.patch || patch -p1 < fengchi.patch
+          
+          # B. 集成 Pershoot KSU-Next (混合钩子)
+          echo "💉 注入 Pershoot KSU-Next..."
           rm -rf drivers/kernelsu
           git clone https://github.com/pershoot/KernelSU-Next drivers/kernelsu
+          
+          # C. 同步并应用 SUSFS 补丁
+          echo "📥 同步 SUSFS4KSU 上游并打补丁..."
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git ../susfs_src
+          
+          # 拷贝 SUSFS 核心文件
+          cp ../susfs_src/kernel_patches/fs/susfs.c fs/
+          cp ../susfs_src/kernel_patches/include/linux/susfs.h include/linux/
+          
+          # 应用 SUSFS 对 KernelSU 的补丁
+          cd drivers/kernelsu
+          cp ../../../susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch .
+          patch -p1 < 10_enable_susfs_for_ksu.patch
+          
+          # 应用 SUSFS 对内核 6.6 的补丁
+          cd ../..
+          cp ../susfs_src/kernel_patches/50_add_susfs_in_kernel-6.6.patch .
+          patch -p1 < 50_add_susfs_in_kernel-6.6.patch
           
           # 配置 Kconfig 和 Makefile
           grep -q "kernelsu" drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           grep -q "kernelsu" drivers/Makefile || echo "obj-y += kernelsu/" >> drivers/Makefile
 
-      - name: 4️⃣ 开启 O2 性能优化与配置
+      - name: 4️⃣ 开启高性能配置 (O2 + Hybrid + SUSFS)
         run: |
-          cd build
-          # 设置 Clang 路径 (6.6 内核通常自带)
+          cd build/common
           export PATH=$GITHUB_WORKSPACE/build/prebuilts/clang/host/linux-x86/clang-r487747c/bin:$PATH
           
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
 
-          # 强制性能优化与混合钩子所需配置
+          # 强制开启高性能 O2 优化
           ./scripts/config --file out/.config --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
           ./scripts/config --file out/.config --disable CONFIG_CC_OPTIMIZE_FOR_SIZE
+          
+          # 开启混合钩子 (Kprobes) 与 SUSFS 支持
           ./scripts/config --file out/.config --enable CONFIG_KPROBES
-          ./scripts/config --file out/.config --enable CONFIG_KPROBE_EVENTS
           ./scripts/config --file out/.config --enable CONFIG_KALLSYMS_ALL
+          ./scripts/config --file out/.config --enable CONFIG_KSU
+          ./scripts/config --file out/.config --enable CONFIG_KSU_SUSFS
+          ./scripts/config --file out/.config --enable CONFIG_SUSFS
 
       - name: 5️⃣ 执行 O2 高性能编译
         run: |
-          cd build
+          cd build/common
           export PATH=$GITHUB_WORKSPACE/build/prebuilts/clang/host/linux-x86/clang-r487747c/bin:$PATH
           
-          # 注入 O2 参数提升游戏运行效率
+          # 注入 KCFLAGS 强制 O2 优化并开启 SIMD 向量化
           make -j$(nproc --all) O=out ARCH=arm64 \
                CC=clang LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- \
                KCFLAGS="-O2 -pipe -ftree-vectorize"
 
-      - name: 6️⃣ AnyKernel3 纯净打包 (不动 DTBO)
+      - name: 6️⃣ AnyKernel3 纯净打包 (安全替换 Boot)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3
-          cp build/out/arch/arm64/boot/Image AnyKernel3/
+          cp build/common/out/arch/arm64/boot/Image AnyKernel3/
           
           cd AnyKernel3
-          # 修改刷入脚本，只针对 boot 分区
+          # 设置刷入逻辑：仅针对 boot 分区，绝不碰 dtbo
           cat <<EOF > anykernel.sh
           properties() { '
-          kernel.string=Ace5U-Fengchi-Hybrid-O2
+          kernel.string=Ace5U-Fengchi-SUSFS-Hybrid
           do.devicecheck=1
           do.modules=0
           do.systemless=1
@@ -101,10 +117,10 @@ jobs:
           flash_boot;
           EOF
           
-          zip -r9 ../Ultimate_Kernel_Ace5U.zip *
+          zip -r9 ../Ultimate_Kernel_Ace5U_SUSFS.zip *
 
-      - name: 7️⃣ 上传刷入包
+      - name: 7️⃣ 上传结果
         uses: actions/upload-artifact@v4
         with:
-          name: Ace5U-Custom-Kernel
-          path: Ultimate_Kernel_Ace5U.zip
+          name: Ace5U-SUSFS-Hybrid-Kernel
+          path: Ultimate_Kernel_Ace5U_SUSFS.zip
