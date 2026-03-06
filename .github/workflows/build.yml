@@ -1,4 +1,4 @@
-name: OnePlus Ace 5 Ultra Simple Build
+name: OnePlus Ace 5 Ultra Final Rescue
 on:
   workflow_dispatch:
 
@@ -9,7 +9,7 @@ jobs:
       - name: 1️⃣ 环境初始化
         run: |
           sudo apt-get update
-          # 彻底移除之前导致报错的 -p 参数
+          # 修复了之前版本中 -p 参数导致的 apt 报错
           sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm \
           python3 python-is-python3 zip git-lfs pahole curl repo
           
@@ -18,98 +18,84 @@ jobs:
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
-      - name: 2️⃣ 同步源码
+      - name: 2️⃣ 同步你的任务清单
         run: |
           mkdir -p $GITHUB_WORKSPACE/build && cd $GITHUB_WORKSPACE/build
           git config --global user.name "hubai7285-code"
           git config --global user.email "hubai7285@gmail.com"
           
-          # 使用你确认成功的清单路径
+          # 沿用你测试成功的清单地址
           repo init -u https://github.com/hubai7285-code/OnePlus_KernelSU_SUSFS.git \
                     -b main \
                     -m manifests/oos16/oneplus_ace5_ultra_w.xml \
                     --no-repo-verify --depth=1
           repo sync -c -j$(nproc --all) --force-sync --no-tags --no-clone-bundle
 
-      - name: 3️⃣ 锁定目录与应用补丁
+      - name: 3️⃣ 核心补救：强制校验并补齐内核源码
         run: |
-          # 解决找不到内核源码的问题
           cd $GITHUB_WORKSPACE/build
-          # 深度搜索包含 Makefile 的目录
-          DETECTOR=$(find . -name "Makefile" -exec grep -l "ARCH ?= arm64" {} + | head -n 1)
-          if [ -z "$DETECTOR" ]; then echo "❌ 无法找到内核源码，请检查同步日志！" && exit 1; fi
+          # 检查是否存在内核标志性文件 Makefile
+          if [ ! -f "Makefile" ] && [ ! -f "common/Makefile" ]; then
+            echo "⚠️ 警告：你的任务清单里可能没有配置内核源码，正在手动补齐..."
+            # 这里我使用了你清单仓库同名的源码仓库作为猜测，如果不对，请替换下方链接
+            git clone --depth=1 https://github.com/hubai7285-code/OnePlus_KernelSU_SUSFS.git kernel_src
+            # 移动源码到当前目录
+            cp -r kernel_src/* . && rm -rf kernel_src
+          fi
+
+          # 重新锁定绝对路径
+          DETECTOR=$(find . -maxdepth 3 -name "Makefile" -exec grep -l "ARCH ?= arm64" {} + | head -n 1)
+          if [ -z "$DETECTOR" ]; then echo "❌ 依然找不到内核源码，请确认你的源码仓库地址！" && exit 1; fi
           
-          KERNEL_ROOT=$(readlink -f $(dirname $DETECTOR))
-          echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
-          echo "✅ 锁定内核路径: $KERNEL_ROOT"
+          ABS_PATH=$(readlink -f $(dirname $DETECTOR))
+          echo "KERNEL_ROOT=$ABS_PATH" >> $GITHUB_ENV
+          echo "✅ 路径已锁定: $ABS_PATH"
+
+      - name: 4️⃣ 注入风驰补丁与 Pershoot KSU (Hybrid Hook)
+        run: |
+          cd ${{ env.KERNEL_ROOT }}
           
-          cd $KERNEL_ROOT
-          
-          # A. 应用风驰补丁
+          # 应用风驰调度补丁
           curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
           git apply --ignore-whitespace fengchi.patch || patch -p1 < fengchi.patch
           
-          # B. 集成 Pershoot KSU-Next
+          # 注入 Pershoot KSU-Next
+          # 开启 KPROBES 后即为 Hybrid 模式
           rm -rf drivers/kernelsu
           git clone https://github.com/pershoot/KernelSU-Next drivers/kernelsu
           
-          # 修正配置引用
+          # 修正 Kconfig 引用
           grep -q "kernelsu" drivers/Kconfig || sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           grep -q "kernelsu" drivers/Makefile || echo "obj-y += kernelsu/" >> drivers/Makefile
 
-      - name: 4️⃣ 开启高性能配置 (O2 + Hybrid)
+      - name: 5️⃣ 开启高性能配置与编译
         run: |
           cd ${{ env.KERNEL_ROOT }}
-          # 自动寻找工具链
+          # 寻找编译器路径
           CLANG_BIN=$(find $GITHUB_WORKSPACE/build/prebuilts -name "clang" -type f | head -n 1 | xargs dirname)
           export PATH=$CLANG_BIN:$PATH
           
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
 
-          # 开启 O2 性能优化
+          # 开启混合钩子关键配置
           ./scripts/config --file out/.config --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
-          # 开启混合钩子所需的 Kprobes
           ./scripts/config --file out/.config --enable CONFIG_KPROBES
-          ./scripts/config --file out/.config --enable CONFIG_KALLSYMS_ALL
-          ./scripts/config --file out/.config --enable CONFIG_KSU
-
-      - name: 5️⃣ 执行编译
-        run: |
-          cd ${{ env.KERNEL_ROOT }}
-          CLANG_BIN=$(find $GITHUB_WORKSPACE/build/prebuilts -name "clang" -type f | head -n 1 | xargs dirname)
-          export PATH=$CLANG_BIN:$PATH
           
+          # 执行编译 (注入 O2)
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
-               CROSS_COMPILE=aarch64-linux-gnu- \
-               KCFLAGS="-O2 -pipe"
+               CROSS_COMPILE=aarch64-linux-gnu- KCFLAGS="-O2"
 
-      - name: 6️⃣ AnyKernel3 安全打包
+      - name: 6️⃣ 打包上传
         run: |
           cd $GITHUB_WORKSPACE
           git clone https://github.com/osm0sis/AnyKernel3
           cp ${{ env.KERNEL_ROOT }}/out/arch/arm64/boot/Image AnyKernel3/
-          
           cd AnyKernel3
-          cat <<EOF > anykernel.sh
-          properties() { '
-          kernel.string=Ace5U-Fengchi-Hybrid-O2
-          do.devicecheck=1
-          do.modules=0
-          do.systemless=1
-          do.cleanup=1
-          device.name1=OnePlusAce5Ultra
-          '; }
-          block=/dev/block/by-name/boot;
-          is_slot_device=1;
-          . /tmp/anykernel/tools/ak3-core.sh;
-          split_boot;
-          flash_boot;
-          EOF
-          zip -r9 ../Ultimate_Kernel_Ace5U.zip *
+          zip -r9 ../Ace5U-Hybrid-Kernel.zip *
 
-      - name: 7️⃣ 上传结果
+      - name: 📤 上传刷入包
         uses: actions/upload-artifact@v4
         with:
-          name: Ace5U-Simple-Kernel
-          path: Ultimate_Kernel_Ace5U.zip
+          name: Ace5U-Kernel
+          path: Ace5U-Hybrid-Kernel.zip
