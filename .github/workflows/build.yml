@@ -1,5 +1,4 @@
-name: Build PLC110 (CCTV Logic - Universal Fengchi)
-
+name: Build OnePlus Ace 5 Ultra Fengchi Kernel
 on:
   workflow_dispatch:
 
@@ -7,107 +6,102 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 环境准备
+      - name: 1️⃣ 环境初始化
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu git git-lfs gnupg gperf libncurses5-dev libssl-dev python3 rsync zip curl ccache wget
-          mkdir -p ~/bin
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-          chmod a+x ~/bin/repo
-          echo "$HOME/bin" >> $GITHUB_PATH
+          sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm \
+          python3 python-is-python3 repo zip git-lfs pahole curl
 
-      - name: 设置 ccache 缓存
-        uses: actions/cache@v4
-        with:
-          path: /home/runner/.ccache
-          key: kernel-ccache-${{ github.sha }}
-          restore-keys: kernel-ccache-
-
-      - name: 源码同步
+      - name: 2️⃣ 同步源码 (基于你的 Manifest)
         run: |
-          mkdir kernel_workspace && cd kernel_workspace
-          git config --global user.email "bot@example.com"
-          git config --global user.name "KernelBot"
-          repo init -u https://github.com/SHuiTU68/OnePlus_KernelSU_SUSFS.git -b main -m manifests/oos16/oneplus_ace5_ultra_w.xml
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+          mkdir build && cd build
+          repo init -u https://github.com/hubai7285-code/OnePlus_KernelSU_SUSFS.git \
+                    -b main \
+                    -m oos16/oneplus_ace5_ultra_w.xml
+          repo sync -c -j$(nproc --all) --force-sync --no-tags --no-clone-bundle
 
-      - name: 第一步：CCTV 逻辑之风驰补丁深度集成
+      - name: 3️⃣ 注入风驰 (Fengchi) 游戏内核补丁
         run: |
-          cd kernel_workspace/kernel || cd kernel_workspace
+          cd build/common
+          echo "📥 正在拉取 cctv 大佬的风驰补丁..."
+          # 下载原始补丁文件
+          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
           
-          # 1. 下载风驰补丁
-          wget https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch -O fengchi.patch
+          # 应用补丁 (使用 --ignore-whitespace 防止格式导致的失败)
+          # 加上 --3way 可以在冲突时尝试自动合并
+          git apply --ignore-whitespace --verbose fengchi.patch || patch -p1 < fengchi.patch
+          echo "✅ 风驰补丁应用尝试完成"
+
+      - name: 4️⃣ 注入 Pershoot KSU-Next (Hybrid Hook)
+        run: |
+          cd build/common
+          rm -rf drivers/kernelsu
+          git clone https://github.com/pershoot/KernelSU-Next drivers/kernelsu
           
-          # 2. CCTV 核心逻辑：尝试 3 级深度匹配应用，解决三方内核路径偏移问题
-          echo "开始应用风驰补丁..."
-          if git apply --check fengchi.patch; then
-              git apply --ignore-whitespace fengchi.patch
-              echo "风驰补丁：Git 标准模式应用成功"
-          else
-              patch -p1 --ignore-whitespace < fengchi.patch || echo "风驰补丁：尝试强制合入..."
-              # 针对三方内核可能缺少的调度器定义进行手动注入
-              sed -i '/config SCHED_WALT/a \	select SCHED_FENGCHI' init/Kconfig || true
-              echo "风驰补丁：CCTV 逻辑适配完成"
+          # 写入 Kconfig/Makefile
+          if ! grep -q "kernelsu" drivers/Kconfig; then
+            sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          fi
+          if ! grep -q "kernelsu" drivers/Makefile; then
+            echo "obj-y += kernelsu/" >> drivers/Makefile
           fi
 
-      - name: 第二步：KSUN 与性能参数注入 (Stable O3 + ZRAM)
+      - name: 5️⃣ 开启 O2 优化与内核配置
         run: |
-          cd kernel_workspace/kernel || cd kernel_workspace
+          cd build
+          # 使用自带编译链
+          export PATH=$GITHUB_WORKSPACE/build/prebuilts/clang/host/linux-x86/clang-r487747c/bin:$PATH
           
-          # 集成 pershoot-KSUN
-          git clone https://github.com/pershoot/KernelSU-Next ksun_src
-          cp -r ksun_src/kernel/* fs/ksun/ || mkdir -p fs/ksun && cp -r ksun_src/kernel/* fs/ksun/
-          grep -q "obj-y += ksun/" fs/Makefile || echo "obj-y += ksun/" >> fs/Makefile
-          
-          # 禁用 KPROBES 以支持混合钩子
-          find arch/arm64/configs/ -type f -name "*defconfig*" -exec sed -i 's/CONFIG_KPROBES=y/CONFIG_KPROBES=n/g' {} +
-          
-          # 性能与 ZRAM 算法调优
-          GKI_CONF=$(find . -maxdepth 4 -type f -name "gki_defconfig" | head -n 1)
-          if [ -n "$GKI_CONF" ]; then
-            echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=y" >> "$GKI_CONF"
-            echo "CONFIG_CC_WERROR=n" >> "$GKI_CONF"
-            # 默认使用最先进的 ZSTD 算法提升 ZRAM 效率
-            echo "CONFIG_ZRAM_DEF_COMP_ZSTD=y" >> "$GKI_CONF"
-            echo "CONFIG_CRYPTO_ZSTD=y" >> "$GKI_CONF"
-            echo "CONFIG_ZRAM_WRITEBACK=y" >> "$GKI_CONF"
-          fi
+          make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
+               CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
 
-      - name: 第三步：执行编译 (全路径执行)
-        run: |
-          BUILD_SCRIPT=$(find kernel_workspace -name "build_kernel.sh" | head -n 1)
-          cd $(dirname "$BUILD_SCRIPT")
-          chmod +x build_kernel.sh
+          # 强制开启 O2 性能优化
+          ./scripts/config --file out/.config --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
+          ./scripts/config --file out/.config --disable CONFIG_CC_OPTIMIZE_FOR_SIZE
           
-          export USE_CCACHE=1
-          export CCACHE_DIR=/home/runner/.ccache
-          ccache -M 10G
-          ./build_kernel.sh plc110 -j$(nproc)
+          # 开启 Kprobes (不关闭，确保 Hybrid Hook 正常)
+          ./scripts/config --file out/.config --enable CONFIG_KPROBES
+          ./scripts/config --file out/.config --enable CONFIG_KPROBE_EVENTS
+          ./scripts/config --file out/.config --enable CONFIG_KALLSYMS_ALL
 
-      - name: 第四步：AnyKernel3 打包
+      - name: 6️⃣ 开始编译 (注入 KCFLAGS)
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git AK3
-          find kernel_workspace -name "Image" -exec cp {} AK3/ \;
+          cd build
+          export PATH=$GITHUB_WORKSPACE/build/prebuilts/clang/host/linux-x86/clang-r487747c/bin:$PATH
           
-          cat <<EOF > AK3/anykernel.sh
-          ### AnyKernel3 Mod Script
-          properties() {
-          kernel.string=PLC110-CCTV-Fengchi-Edition
+          # 加上 -O2 和相关的性能指令
+          make -j$(nproc --all) O=out ARCH=arm64 \
+               CC=clang LLVM=1 LLVM_IAS=1 \
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               KCFLAGS="-O2 -pipe -ftree-vectorize"
+
+      - name: 7️⃣ 打包 AnyKernel3 (仅替换 Boot)
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3
+          cp build/out/arch/arm64/boot/Image AnyKernel3/
+          
+          cd AnyKernel3
+          # 自定义刷入脚本，确保安全
+          cat <<EOF > anykernel.sh
+          properties() { '
+          kernel.string=Ace5U-Fengchi-KSUNext-O2
           do.devicecheck=0
           do.modules=0
+          do.systemless=1
           do.cleanup=1
-          }
-          block=boot;
-          is_slot_device=auto;
-          . tools/ak3-core.sh;
+          device.name1=OnePlusAce5Ultra
+          '; }
+          block=/dev/block/by-name/boot;
+          is_slot_device=1;
+          . /tmp/anykernel/tools/ak3-core.sh;
           split_boot;
           flash_boot;
           EOF
           
-          cd AK3 && zip -r ../PLC110-CCTV-$(date +%Y%m%d).zip *
+          zip -r9 ../KSUNext_Fengchi_O2_Flashable.zip *
 
-      - name: 上传刷机包
+      - name: 8️⃣ 成果上传
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-CCTV-Kernel
-          path: "*.zip"
+          name: Fengchi-KSUNext-Kernel
+          path: KSUNext_Fengchi_O2_Flashable.zip
