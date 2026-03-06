@@ -1,69 +1,58 @@
-name: Build OnePlus Ace 5 Ultra Fengchi Kernel
+name: OnePlus Ace 5 Ultra Ultimate Build
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 手动点击触发
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-       - name: 1️⃣ 环境初始化 (增强版)
+      - name: 1️⃣ 深度环境准备 (包含最新 Repo)
         run: |
           sudo apt-get update
           sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm \
           python3 python-is-python3 zip git-lfs pahole curl
-          # 下载最新的 repo 脚本，避免系统自带版本过旧无法解析子目录
+          # 解决截图中的 repo 权限与版本问题
           mkdir -p ~/bin
           curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
 
-      - name: 2️⃣ 同步 OnePlus 源码 (带路径自动修复)
+      - name: 2️⃣ 智能同步源码 (自动修复 Manifest 路径)
         run: |
           mkdir build && cd build
-          # 1. 先初始化仓库根目录
+          # 初始化主仓库
           repo init -u https://github.com/hubai7285-code/OnePlus_KernelSU_SUSFS.git -b main --no-repo-verify
           
-          # 2. 自动探测 XML 的准确位置
-          # 我们先将 manifest 仓库克隆下来看一下结构（仅用于确认路径）
-          git clone https://github.com/hubai7285-code/OnePlus_KernelSU_SUSFS.git temp_manifest
-          
-          echo "🔍 正在查找 XML 准确路径..."
-          # 在仓库中搜索 oneplus_ace5_ultra_w.xml
+          # 临时克隆以定位 XML 真实路径
+          git clone --depth=1 https://github.com/hubai7285-code/OnePlus_KernelSU_SUSFS.git temp_manifest
           REAL_PATH=$(find temp_manifest -name "oneplus_ace5_ultra_w.xml" | sed 's|temp_manifest/||')
           
           if [ -z "$REAL_PATH" ]; then
-            echo "❌ 错误：在仓库中找不到 oneplus_ace5_ultra_w.xml，请检查文件名是否正确！"
+            echo "❌ 无法定位 XML 文件，请确认仓库中是否存在 oneplus_ace5_ultra_w.xml"
             exit 1
           fi
+          echo "✅ 定位到 Manifest 路径: $REAL_PATH"
           
-          echo "✅ 找到路径：$REAL_PATH"
-          
-          # 3. 使用找到的准确路径重新初始化并同步
+          # 使用定位到的路径重新 init 并同步
           repo init -m "$REAL_PATH"
           repo sync -c -j$(nproc --all) --force-sync --no-tags --no-clone-bundle
-          
-          # 清理临时文件夹
           rm -rf temp_manifest
 
-      - name: 3️⃣ 注入风驰 (Fengchi) 游戏内核补丁
+      - name: 3️⃣ 合入风驰 (Fengchi) 补丁与 KSU-Next
         run: |
+          # 进入 common 核心目录
           cd build/common
-          echo "📥 正在拉取 cctv 大佬的风驰补丁..."
-          # 下载原始补丁文件
-          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
           
-          # 应用补丁 (使用 --ignore-whitespace 防止格式导致的失败)
-          # 加上 --3way 可以在冲突时尝试自动合并
+          echo "📥 下载风驰游戏优化补丁..."
+          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
+          # 尝试合入，ignore-whitespace 减少因 6.6 内核行号偏移导致的失败
           git apply --ignore-whitespace --verbose fengchi.patch || patch -p1 < fengchi.patch
-          echo "✅ 风驰补丁应用尝试完成"
-
-      - name: 4️⃣ 注入 Pershoot KSU-Next (Hybrid Hook)
-        run: |
-          cd build/common
+          
+          echo "💉 注入 Pershoot KSU-Next (混合钩子模式)..."
           rm -rf drivers/kernelsu
           git clone https://github.com/pershoot/KernelSU-Next drivers/kernelsu
           
-          # 写入 Kconfig/Makefile
+          # 写入 Kconfig 与 Makefile
           if ! grep -q "kernelsu" drivers/Kconfig; then
             sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           fi
@@ -71,46 +60,51 @@ jobs:
             echo "obj-y += kernelsu/" >> drivers/Makefile
           fi
 
-      - name: 5️⃣ 开启 O2 优化与内核配置
+      - name: 4️⃣ 开启 O2 优化与内核配置
         run: |
           cd build
-          # 使用自带编译链
+          # 设定自带 Clang 路径 (根据 manifest 结构)
           export PATH=$GITHUB_WORKSPACE/build/prebuilts/clang/host/linux-x86/clang-r487747c/bin:$PATH
           
+          # 生成 GKI 基础配置
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
 
-          # 强制开启 O2 性能优化
+          # 强制性能优化与混合钩子配置
           ./scripts/config --file out/.config --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
           ./scripts/config --file out/.config --disable CONFIG_CC_OPTIMIZE_FOR_SIZE
-          
-          # 开启 Kprobes (不关闭，确保 Hybrid Hook 正常)
           ./scripts/config --file out/.config --enable CONFIG_KPROBES
           ./scripts/config --file out/.config --enable CONFIG_KPROBE_EVENTS
           ./scripts/config --file out/.config --enable CONFIG_KALLSYMS_ALL
+          ./scripts/config --file out/.config --enable CONFIG_OVERLAY_FS
 
-      - name: 6️⃣ 开始编译 (注入 KCFLAGS)
+      - name: 5️⃣ 执行 O2 高性能编译
         run: |
           cd build
           export PATH=$GITHUB_WORKSPACE/build/prebuilts/clang/host/linux-x86/clang-r487747c/bin:$PATH
           
-          # 加上 -O2 和相关的性能指令
+          # 注入 KCFLAGS 强制编译器进行 O2 优化
           make -j$(nproc --all) O=out ARCH=arm64 \
                CC=clang LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- \
                KCFLAGS="-O2 -pipe -ftree-vectorize"
 
-      - name: 7️⃣ 打包 AnyKernel3 (仅替换 Boot)
+      - name: 6️⃣ AnyKernel3 纯净打包 (只替换 Boot)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3
-          cp build/out/arch/arm64/boot/Image AnyKernel3/
+          # 确保 Image 存在
+          if [ -f build/out/arch/arm64/boot/Image ]; then
+            cp build/out/arch/arm64/boot/Image AnyKernel3/
+          else
+            echo "❌ 编译产物缺失！" && exit 1
+          fi
           
           cd AnyKernel3
-          # 自定义刷入脚本，确保安全
+          # 构建专机专用的刷入脚本
           cat <<EOF > anykernel.sh
           properties() { '
-          kernel.string=Ace5U-Fengchi-KSUNext-O2
-          do.devicecheck=0
+          kernel.string=Ace5U-Fengchi-Hybrid-O2
+          do.devicecheck=1
           do.modules=0
           do.systemless=1
           do.cleanup=1
@@ -123,10 +117,10 @@ jobs:
           flash_boot;
           EOF
           
-          zip -r9 ../KSUNext_Fengchi_O2_Flashable.zip *
+          zip -r9 ../Ultimate_Kernel_Ace5U.zip *
 
-      - name: 8️⃣ 成果上传
+      - name: 7️⃣ 上传刷入包
         uses: actions/upload-artifact@v4
         with:
-          name: Fengchi-KSUNext-Kernel
-          path: KSUNext_Fengchi_O2_Flashable.zip
+          name: Ace5U-Ultimate-Kernel
+          path: Ultimate_Kernel_Ace5U.zip
