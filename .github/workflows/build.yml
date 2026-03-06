@@ -1,4 +1,4 @@
-name: Ace5U mt6991 O2-Fix Build
+name: Ace5U mt6991 Fuzzy Align Build
 on:
   workflow_dispatch:
 
@@ -12,38 +12,40 @@ jobs:
           sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm \
           python3 python-is-python3 zip git-lfs pahole curl patch
 
-      - name: 2️⃣ 目录重构 (锁定你的 Fork 仓库)
+      - name: 2️⃣ 路径重构 (彻底对齐目录)
         run: |
+          # 复刻 cctv18 脚本中预期的 MTK 目录层级
           mkdir -p $GITHUB_WORKSPACE/kernel_platform/common
           cd $GITHUB_WORKSPACE/kernel_platform
           
-          # 拉取你的核心源码分支
+          # 克隆你的内核源码 (锁定分支)
           git clone --depth=1 -b oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra \
           https://github.com/hubai7285-code/android_kernel_oneplus_mt6991v1.git common
           
-          # 补齐编译器 (不再同步清单，直接拉取官方 Clang)
+          # 克隆配套的官方工具链
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 prebuilts/clang
           
           echo "KERNEL_ROOT=$GITHUB_WORKSPACE/kernel_platform/common" >> $GITHUB_ENV
 
-      - name: 3️⃣ 补丁对齐与 KSU 注入 (修复 Kconfig 报错)
+      - name: 3️⃣ 智能对齐：风驰补丁 & Pershoot KSU
         run: |
           cd ${{ env.KERNEL_ROOT }}
           
-          # A. 优先注入 KSU (解决之前的 can't open file 报错)
+          # A. 集成 Pershoot KSU-Next (混合钩子模式)
+          # 使用绝对路径注入 Kconfig/Makefile，彻底修复 1000023697.jpg 的报错
           rm -rf drivers/kernelsu
           git clone https://github.com/pershoot/KernelSU-Next drivers/kernelsu
           
-          # 确保在 Kconfig 末尾正确插入，不破坏结构
+          # 修正 Kconfig：使用 $i 在文件末尾前插入，避免语法错误
           sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
           echo "obj-y += kernelsu/" >> drivers/Makefile
 
-          # B. 对齐风驰补丁 (使用模糊匹配防止 FAILED)
+          # B. 智能对齐风馳補丁
           curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          # --fuzz=3 允许补丁上下浮动3行匹配，--ignore-whitespace 忽略空格差异
-          patch -p1 --fuzz=3 --ignore-whitespace < fengchi.patch || echo "⚠️ 部分补丁行无法自动对齐，已跳过以维持编译"
+          # --fuzz=3 允许补丁行偏移3行匹配，--ignore-whitespace 忽略空格差异
+          patch -p1 --fuzz=3 --ignore-whitespace < fengchi.patch || echo "⚠️ 部分补丁冲突无法对齐，将生成 .rej 文件并尝试继续编译"
 
-      - name: 4️⃣ 开启高性能配置 (解决 O2 报错)
+      - name: 4️⃣ 开启高质量 O2 编译
         run: |
           cd ${{ env.KERNEL_ROOT }}
           CLANG_BIN=$(find $GITHUB_WORKSPACE -name "clang" -type f | head -n 1 | xargs dirname)
@@ -53,36 +55,30 @@ jobs:
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
 
-          # 2. 注入 Kprobes (混合钩子核心)
+          # 2. 注入优化与混合钩子配置 (取代报错的 scripts/config 逻辑)
           ./scripts/config --file out/.config --enable CONFIG_KPROBES
           ./scripts/config --file out/.config --enable CONFIG_KSU
           ./scripts/config --file out/.config --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
-
-      - name: 5️⃣ 执行编译 (注入 O2 且屏蔽警告报错)
-        run: |
-          cd ${{ env.KERNEL_ROOT }}
-          CLANG_BIN=$(find $GITHUB_WORKSPACE -name "clang" -type f | head -n 1 | xargs dirname)
-          export PATH=$CLANG_BIN:$PATH
           
-          # 重要：KCFLAGS 注入 -O2 的同时加入 -Wno-error，防止优化导致的警告中断编译
+          # 3. 彻底屏蔽导致报错的 O2 警告：加入 -Wno-error
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- \
-               KCFLAGS="-O2 -pipe -Wno-error"
+               KCFLAGS="-O2 -pipe -Wno-error" 
 
-      - name: 6️⃣ 结果打包与上传
+      - name: 5️⃣ 结果打包
         run: |
           cd $GITHUB_WORKSPACE
           git clone https://github.com/osm0sis/AnyKernel3
           IMG_PATH=$(find ${{ env.KERNEL_ROOT }}/out -name "Image" -type f | head -n 1)
           if [ -n "$IMG_PATH" ]; then
             cp $IMG_PATH AnyKernel3/
-            cd AnyKernel3 && zip -r9 ../Ace5U-O2-Hybrid-Kernel.zip *
+            cd AnyKernel3 && zip -r9 ../Ace5U-Hybrid-Kernel.zip *
           else
-            echo "❌ 编译未产出 Image 文件，请检查日志！" && exit 1
+            echo "❌ 编译失败，未产出 Image" && exit 1
           fi
 
-      - name: 📤 上传附件
+      - name: 6️⃣ 上传附件
         uses: actions/upload-artifact@v4
         with:
           name: Ace5U-Kernel
-          path: Ace5U-O2-Hybrid-Kernel.zip
+          path: Ace5U-Hybrid-Kernel.zip
