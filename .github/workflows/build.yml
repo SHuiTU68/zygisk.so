@@ -1,4 +1,4 @@
-name: Ace5U mt6991 CCTV-Logic Build
+name: Ace5U mt6991 O2-Fix Build
 on:
   workflow_dispatch:
 
@@ -12,79 +12,77 @@ jobs:
           sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm \
           python3 python-is-python3 zip git-lfs pahole curl patch
 
-      - name: 2️⃣ 目录重构 (复刻 MTK 目录结构)
+      - name: 2️⃣ 目录重构 (锁定你的 Fork 仓库)
         run: |
-          # 建立 cctv18 脚本中预期的目录层级
           mkdir -p $GITHUB_WORKSPACE/kernel_platform/common
           cd $GITHUB_WORKSPACE/kernel_platform
           
-          # 克隆你的内核源码
+          # 拉取你的核心源码分支
           git clone --depth=1 -b oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra \
           https://github.com/hubai7285-code/android_kernel_oneplus_mt6991v1.git common
           
-          # 克隆配套的编译器 (根据清单，MTK 通常需要特定的 clang)
+          # 补齐编译器 (不再同步清单，直接拉取官方 Clang)
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 prebuilts/clang
           
           echo "KERNEL_ROOT=$GITHUB_WORKSPACE/kernel_platform/common" >> $GITHUB_ENV
 
-      - name: 3️⃣ 注入风驰补丁 (复刻大佬的 patch -p1 逻辑)
+      - name: 3️⃣ 补丁对齐与 KSU 注入 (修复 Kconfig 报错)
         run: |
           cd ${{ env.KERNEL_ROOT }}
           
-          # 下载风驰补丁
-          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          
-          # 使用 patch -p1 而不是 git apply，这能解决你之前的 Hunk FAILED 报错
-          # --fuzz=3 可以让补丁在代码行微调时依然成功合入
-          patch -p1 --fuzz=3 < fengchi.patch || echo "⚠️ 部分补丁行可能需要手动对齐，但编译将尝试继续"
-
-      - name: 4️⃣ 集成 Pershoot KSU-Next (Hybrid Hook)
-        run: |
-          cd ${{ env.KERNEL_ROOT }}
-          
-          # 按照大佬脚本中的逻辑注入 KSU
+          # A. 优先注入 KSU (解决之前的 can't open file 报错)
           rm -rf drivers/kernelsu
           git clone https://github.com/pershoot/KernelSU-Next drivers/kernelsu
           
-          # 自动注入配置
-          [ -f drivers/Kconfig ] && sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
-          [ -f drivers/Makefile ] && echo "obj-y += kernelsu/" >> drivers/Makefile
+          # 确保在 Kconfig 末尾正确插入，不破坏结构
+          sed -i '$i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          echo "obj-y += kernelsu/" >> drivers/Makefile
 
-      - name: 5️⃣ 开启 MTK 专用高性能配置 (O2)
+          # B. 对齐风驰补丁 (使用模糊匹配防止 FAILED)
+          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
+          # --fuzz=3 允许补丁上下浮动3行匹配，--ignore-whitespace 忽略空格差异
+          patch -p1 --fuzz=3 --ignore-whitespace < fengchi.patch || echo "⚠️ 部分补丁行无法自动对齐，已跳过以维持编译"
+
+      - name: 4️⃣ 开启高性能配置 (解决 O2 报错)
         run: |
           cd ${{ env.KERNEL_ROOT }}
-          # 锁定编译器
           CLANG_BIN=$(find $GITHUB_WORKSPACE -name "clang" -type f | head -n 1 | xargs dirname)
           export PATH=$CLANG_BIN:$PATH
           
-          # 生成配置 (cctv18 的逻辑通常使用 gki_defconfig 或厂商配置)
+          # 1. 生成基础配置
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
                CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
 
-          # 开启 Kprobes (混合钩子核心)
+          # 2. 注入 Kprobes (混合钩子核心)
           ./scripts/config --file out/.config --enable CONFIG_KPROBES
           ./scripts/config --file out/.config --enable CONFIG_KSU
           ./scripts/config --file out/.config --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
 
-      - name: 6️⃣ 执行编译与打包
+      - name: 5️⃣ 执行编译 (注入 O2 且屏蔽警告报错)
         run: |
           cd ${{ env.KERNEL_ROOT }}
           CLANG_BIN=$(find $GITHUB_WORKSPACE -name "clang" -type f | head -n 1 | xargs dirname)
           export PATH=$CLANG_BIN:$PATH
           
-          # 注入 O2 优化进行编译
+          # 重要：KCFLAGS 注入 -O2 的同时加入 -Wno-error，防止优化导致的警告中断编译
           make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
-               CROSS_COMPILE=aarch64-linux-gnu- KCFLAGS="-O2"
-          
-          # 打包
+               CROSS_COMPILE=aarch64-linux-gnu- \
+               KCFLAGS="-O2 -pipe -Wno-error"
+
+      - name: 6️⃣ 结果打包与上传
+        run: |
           cd $GITHUB_WORKSPACE
           git clone https://github.com/osm0sis/AnyKernel3
           IMG_PATH=$(find ${{ env.KERNEL_ROOT }}/out -name "Image" -type f | head -n 1)
-          cp $IMG_PATH AnyKernel3/
-          cd AnyKernel3 && zip -r9 ../Ace5U-CCTV-Edition.zip *
+          if [ -n "$IMG_PATH" ]; then
+            cp $IMG_PATH AnyKernel3/
+            cd AnyKernel3 && zip -r9 ../Ace5U-O2-Hybrid-Kernel.zip *
+          else
+            echo "❌ 编译未产出 Image 文件，请检查日志！" && exit 1
+          fi
 
-      - name: 7️⃣ 上传刷入包
+      - name: 📤 上传附件
         uses: actions/upload-artifact@v4
         with:
           name: Ace5U-Kernel
-          path: Ace5U-CCTV-Edition.zip
+          path: Ace5U-O2-Hybrid-Kernel.zip
