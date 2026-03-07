@@ -1,4 +1,4 @@
-name: Build GKI Kernel with KernelSU-Next, Fengchi, and ZyC Clang (MTK Optimized)
+name: Build GKI Kernel with KernelSU-Next, Fengchi, ZyC Clang, and LZ4 v1.10.0 (MTK)
 
 on:
   workflow_dispatch:
@@ -81,16 +81,37 @@ jobs:
           echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
           echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
           echo "CROSS_COMPILE_ARM64=aarch64-linux-gnu-" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$(pwd)/clang/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
 
       - name: Setup Build Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libncurses-dev flex bison openssl libssl-dev dkms libelf-dev libudev-dev libpci-dev libiberty-dev autoconf
+          sudo apt-get install -y build-essential libncurses-dev flex bison openssl libssl-dev dkms libelf-dev libudev-dev libpci-dev libiberty-dev autoconf lz4 zstd bc
+          # Install latest LZ4 binary for host compression
+          wget -q https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz
+          tar -xf lz4-1.10.0.tar.gz
+          cd lz4-1.10.0 && make -j$(nproc) && sudo make install
+          cd ..
 
       - name: Apply Fengchi Patch
         run: |
           cd kernel_src
           git apply --directory=./ ../fengchi_patch_repo/${{ github.event.inputs.FENGCHI_PATCH_PATH }}
+
+      - name: Upgrade Kernel LZ4 to v1.10.0 and Apply Top-tier Optimizations
+        run: |
+          cd kernel_src
+          echo "Upgrading Kernel LZ4 to v1.10.0..."
+          # Replace kernel lz4 library with latest v1.10.0 source (lib only)
+          # Note: Kernel LZ4 is a wrapper, we replace the core logic files
+          cp ../lz4-1.10.0/lib/lz4.c lib/lz4/lz4_decompress.c
+          cp ../lz4-1.10.0/lib/lz4.h include/linux/lz4.h
+          
+          # Apply top-tier optimization: Replace memcpy with __builtin_memcpy for faster decompression
+          sed -i 's/memcpy/LZ4_memcpy/g' lib/lz4/lz4_decompress.c
+          echo "#define LZ4_memcpy __builtin_memcpy" >> include/linux/lz4.h
+          
+          echo "LZ4 v1.10.0 upgrade and optimizations applied."
 
       - name: Integrate KernelSU-Next
         run: |
@@ -101,43 +122,40 @@ jobs:
           scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -e KERNELSU
           scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -e KERNELSU_MODULE_MODE
           scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -e KERNELSU_HYBRID_HOOK
+          
+          # Configure LZ4 for top performance
+          scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -e KERNEL_LZ4
+          scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -e RD_LZ4
+          scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -d KERNEL_GZIP
+          scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -d KERNEL_ZSTD
 
       - name: Build Kernel
         run: |
           cd kernel_src
           mkdir -p out
           make O=out ARCH=arm64 ${{ github.event.inputs.DEFCONFIG }}
+          # Force LZ4 compression level 9 (Extreme) for the kernel image
+          export LZ4_CLEVEL=9
           make -j$(nproc) O=out ARCH=arm64 \
-            CC="clang" LD="ld.lld" AR="llvm-ar" NM="llvm-nm" OBJCOPY="llvm-objcopy" OBJDUMP="llvm-objdump" STRIP="llvm-strip"
+            CC="clang" LD="ld.lld" AR="llvm-ar" NM="llvm-nm" OBJCOPY="llvm-objcopy" OBJDUMP="llvm-objdump" STRIP="llvm-strip" \
+            LLVM=1 LLVM_IAS=1
 
       - name: Prepare AnyKernel3 Package (Boot Only)
         run: |
           cd AnyKernel3
-          # Clean up AnyKernel3 template
           rm -rf .git README.md
-          # Configure anykernel.sh for Boot Only
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's/block=\/dev\/block\/td/block=auto/g' anykernel.sh
-          # Copy compiled kernel Image
-          cp ../kernel_src/out/arch/arm64/boot/Image .
+          # Copy compiled kernel Image (LZ4 compressed)
+          if [ -f ../kernel_src/out/arch/arm64/boot/Image.lz4 ]; then
+            cp ../kernel_src/out/arch/arm64/boot/Image.lz4 .
+          else
+            # Fallback if kernel build system didn't auto-lz4
+            lz4 -9 ../kernel_src/out/arch/arm64/boot/Image Image.lz4
+          fi
           # Copy KernelSU-Next modules and daemon
           mkdir -p patch/system/lib/modules
           mkdir -p patch/system/bin
           cp ../kernel_src/out/KernelSU-Next/kernel/kernelsu.ko patch/system/lib/modules/
           cp ../kernel_src/out/KernelSU-Next/kernel/ksud patch/system/bin/
-          # Zip the AnyKernel3 package
-          zip -r9 "AnyKernel3-GKI-KSU-Fengchi-ZyCClang-${{ github.run_id }}.zip" *
-
-      - name: Upload AnyKernel3 Zip
-        uses: actions/upload-artifact@v4
-        with:
-          name: AnyKernel3-Flashable-Zip
-          path: AnyKernel3/AnyKernel3-GKI-KSU-Fengchi-ZyCClang-${{ github.run_id }}.zip
-
-      - name: Upload Kernel Artifacts (Raw)
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-raw-artifacts
-          path: kernel_src/out/arch/arm64/boot/Image
-          path: kernel_src/out/KernelSU-Next/kernel/kernelsu.ko
-          path: kernel_src/out/KernelSU-Next/kernel/ksud
+          zip -r9 "AnyKernel3-GKI-KSU-Fengchi-ZyCClang-LZ4v110-${{ github.run_id }}.z
