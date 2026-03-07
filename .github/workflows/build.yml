@@ -1,6 +1,10 @@
-name: Build GKI Kernel (Full API & Top LZ4)
+name: Build GKI Kernel (Perfect Trigger)
 
 on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
   workflow_dispatch:
     inputs:
       KSU_BRANCH:
@@ -42,24 +46,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.inputs.KERNEL_REPO }}
-          ref: ${{ github.event.inputs.KERNEL_BRANCH }}
+          repository: ${{ github.event.inputs.KERNEL_REPO || 'hubai7285-code/android_kernel_oneplus_mt6991v1' }}
+          ref: ${{ github.event.inputs.KERNEL_BRANCH || 'oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra' }}
           path: kernel_src
 
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.inputs.KSU_REPO }}
-          ref: ${{ github.event.inputs.KSU_BRANCH }}
+          repository: ${{ github.event.inputs.KSU_REPO || 'pershoot/KernelSU-Next' }}
+          ref: ${{ github.event.inputs.KSU_BRANCH || 'dev' }}
           path: KernelSU-Next
 
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.inputs.FENGCHI_PATCH_REPO }}
+          repository: ${{ github.event.inputs.FENGCHI_PATCH_REPO || 'cctv18/oppo_oplus_realme_sm8750' }}
           path: fengchi_patch_repo
 
       - uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.inputs.ANYKERNEL3_REPO }}
+          repository: ${{ github.event.inputs.ANYKERNEL3_REPO || 'osm0sis/AnyKernel3' }}
           path: AnyKernel3
 
       - name: Setup Environment & Clang (API) & LZ4
@@ -83,7 +87,7 @@ jobs:
       - name: Apply Patches & Configure Kernel
         run: |
           cd kernel_src
-          git apply --directory=./ ../fengchi_patch_repo/${{ github.event.inputs.FENGCHI_PATCH_PATH }}
+          git apply --directory=./ ../fengchi_patch_repo/${{ github.event.inputs.FENGCHI_PATCH_PATH || 'other_patch/fengchi.patch' }}
           [ -d lib/lz4 ] || mkdir -p lib/lz4
           [ -d include/linux ] || mkdir -p include/linux
           cp ../lz4-1.10.0/lib/lz4.c lib/lz4/lz4_decompress.c
@@ -92,16 +96,18 @@ jobs:
           echo "#define LZ4_memcpy __builtin_memcpy" >> include/linux/lz4.h
           chmod +x ../KernelSU-Next/kernel/setup.sh
           ../KernelSU-Next/kernel/setup.sh
-          scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -e KERNELSU -e KERNELSU_MODULE_MODE -e KERNELSU_HYBRID_HOOK
-          scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -e KERNEL_LZ4 -e RD_LZ4
-          scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -d KERNEL_GZIP -d KERNEL_LZO -d KERNEL_XZ -d KERNEL_ZSTD
-          scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -d KERNEL_IMAGE_COMPRESSION_LZ4 -d KERNEL_IMAGE_COMPRESSION_GZIP -d KERNEL_IMAGE_COMPRESSION_ZSTD
+          DEFCONFIG=${{ github.event.inputs.DEFCONFIG || 'gki_defconfig' }}
+          scripts/config --file arch/arm64/configs/$DEFCONFIG -e KERNELSU -e KERNELSU_MODULE_MODE -e KERNELSU_HYBRID_HOOK
+          scripts/config --file arch/arm64/configs/$DEFCONFIG -e KERNEL_LZ4 -e RD_LZ4
+          scripts/config --file arch/arm64/configs/$DEFCONFIG -d KERNEL_GZIP -d KERNEL_LZO -d KERNEL_XZ -d KERNEL_ZSTD
+          scripts/config --file arch/arm64/configs/$DEFCONFIG -d KERNEL_IMAGE_COMPRESSION_LZ4 -d KERNEL_IMAGE_COMPRESSION_GZIP -d KERNEL_IMAGE_COMPRESSION_ZSTD
 
       - name: Build Kernel
         run: |
           cd kernel_src
           mkdir -p out
-          make O=out ARCH=arm64 ${{ github.event.inputs.DEFCONFIG }}
+          DEFCONFIG=${{ github.event.inputs.DEFCONFIG || 'gki_defconfig' }}
+          make O=out ARCH=arm64 $DEFCONFIG
           make -j$(nproc) O=out ARCH=arm64 \
             CC="clang" LD="ld.lld" AR="llvm-ar" NM="llvm-nm" OBJCOPY="llvm-objcopy" OBJDUMP="llvm-objdump" STRIP="llvm-strip" \
             LLVM=1 LLVM_IAS=1
