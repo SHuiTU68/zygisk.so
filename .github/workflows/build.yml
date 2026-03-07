@@ -1,97 +1,143 @@
-name: Ace5U mt6991 O3-Stable Final
+name: Build GKI Kernel with KernelSU-Next, Fengchi, and ZyC Clang (MTK Optimized)
+
 on:
   workflow_dispatch:
+    inputs:
+      KSU_BRANCH:
+        description: 'KernelSU-Next branch (e.g., dev, stable)'
+        required: true
+        default: 'dev'
+      KSU_REPO:
+        description: 'KernelSU-Next repository (e.g., KernelSU-Next/KernelSU-Next, pershoot/KernelSU-Next)'
+        required: true
+        default: 'pershoot/KernelSU-Next'
+      KERNEL_BRANCH:
+        description: 'Kernel source branch'
+        required: true
+        default: 'oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra'
+      KERNEL_REPO:
+        description: 'Kernel source repository'
+        required: true
+        default: 'hubai7285-code/android_kernel_oneplus_mt6991v1'
+      DEFCONFIG:
+        description: 'Kernel defconfig file (e.g., gki_defconfig)'
+        required: true
+        default: 'gki_defconfig'
+      FENGCHI_PATCH_REPO:
+        description: 'Fengchi patch repository'
+        required: true
+        default: 'cctv18/oppo_oplus_realme_sm8750'
+      FENGCHI_PATCH_PATH:
+        description: 'Path to fengchi.patch within the repository'
+        required: true
+        default: 'other_patch/fengchi.patch'
+      ZYC_CLANG_VERSION:
+        description: 'ZyC Clang version (e.g., 15.0.7-20260208-release)'
+        required: true
+        default: '15.0.7-20260208-release'
+      ANYKERNEL3_REPO:
+        description: 'AnyKernel3 repository'
+        required: true
+        default: 'osm0sis/AnyKernel3'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: 1️⃣ 系统环境准备
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.KERNEL_REPO }}
+          ref: ${{ github.event.inputs.KERNEL_BRANCH }}
+          path: kernel_src
+
+      - name: Checkout KernelSU-Next
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.KSU_REPO }}
+          ref: ${{ github.event.inputs.KSU_BRANCH }}
+          path: KernelSU-Next
+
+      - name: Checkout Fengchi Patch Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.FENGCHI_PATCH_REPO }}
+          path: fengchi_patch_repo
+
+      - name: Checkout AnyKernel3
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.ANYKERNEL3_REPO }}
+          path: AnyKernel3
+
+      - name: Download ZyC Clang Toolchain
+        run: |
+          CLANG_VERSION=${{ github.event.inputs.ZYC_CLANG_VERSION }}
+          CLANG_URL="https://github.com/ZyCromerZ/Clang/releases/download/${CLANG_VERSION}/Clang-${CLANG_VERSION}.tar.gz"
+          wget -q $CLANG_URL -O clang.tar.gz
+          mkdir -p clang
+          tar -xf clang.tar.gz -C clang
+          echo "PATH=$(pwd)/clang/bin:$PATH" >> $GITHUB_ENV
+          echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE_ARM64=aarch64-linux-gnu-" >> $GITHUB_ENV
+
+      - name: Setup Build Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc build-essential flex bison libssl-dev libelf-dev clang lld llvm \
-          python3 python-is-python3 zip git-lfs pahole curl patch
+          sudo apt-get install -y build-essential libncurses-dev flex bison openssl libssl-dev dkms libelf-dev libudev-dev libpci-dev libiberty-dev autoconf
 
-      - name: 2️⃣ 源码拉取 (锁定你的仓库)
+      - name: Apply Fengchi Patch
         run: |
-          mkdir -p $GITHUB_WORKSPACE/kernel_platform/common
-          cd $GITHUB_WORKSPACE/kernel_platform
-          # 仅拉取你 Fork 的内核源码
-          git clone --depth=1 -b oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra \
-          https://github.com/hubai7285-code/android_kernel_oneplus_mt6991v1.git common
-          # 拉取官方 Clang 编译器
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 prebuilts/clang
-          echo "KERNEL_ROOT=$GITHUB_WORKSPACE/kernel_platform/common" >> $GITHUB_ENV
+          cd kernel_src
+          git apply --directory=./ ../fengchi_patch_repo/${{ github.event.inputs.FENGCHI_PATCH_PATH }}
 
-      - name: 3️⃣ 深度对齐：集成 KSU-Next (解决克隆失败问题)
+      - name: Integrate KernelSU-Next
         run: |
-          cd ${{ env.KERNEL_ROOT }}
-          # A. 使用更稳定的镜像/重试逻辑拉取 KSU
-          rm -rf drivers/kernelsu
-          for i in {1..5}; do
-            git clone --depth=1 https://github.com/pershoot/KernelSU-Next drivers/kernelsu && break || sleep 15
-          done
+          cd kernel_src
+          chmod +x ../KernelSU-Next/kernel/setup.sh
+          ../KernelSU-Next/kernel/setup.sh
+          # Enable KernelSU and Hybrid Hook
+          scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -e KERNELSU
+          scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -e KERNELSU_MODULE_MODE
+          scripts/config --file arch/arm64/configs/${{ github.event.inputs.DEFCONFIG }} -e KERNELSU_HYBRID_HOOK
 
-          # B. 绝对路径修复 Kconfig
-          if [ -d "drivers/kernelsu" ]; then
-            sed -i '/kernelsu/d' drivers/Kconfig
-            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-            echo "obj-y += kernelsu/" >> drivers/Makefile
-          else
-            echo "❌ KSU 拉取彻底失败，请检查网络或仓库地址" && exit 1
-          fi
-
-      - name: 4️⃣ 补丁对齐：风驰补丁 (Fuzzy Align)
+      - name: Build Kernel
         run: |
-          cd ${{ env.KERNEL_ROOT }}
-          curl -LO https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          # 使用 fuzz=3 自动对齐行号偏移
-          # 使用 --reject 即使冲突也强行通过，确保编译不中断
-          patch -p1 --fuzz=3 --ignore-whitespace < fengchi.patch || echo "⚠️ 调度器部分冲突，已跳过损坏行"
+          cd kernel_src
+          mkdir -p out
+          make O=out ARCH=arm64 ${{ github.event.inputs.DEFCONFIG }}
+          make -j$(nproc) O=out ARCH=arm64 \
+            CC="clang" LD="ld.lld" AR="llvm-ar" NM="llvm-nm" OBJCOPY="llvm-objcopy" OBJDUMP="llvm-objdump" STRIP="llvm-strip"
 
-      - name: 5️⃣ 配置 O3 高性能编译模式
+      - name: Prepare AnyKernel3 Package (Boot Only)
         run: |
-          cd ${{ env.KERNEL_ROOT }}
-          CLANG_BIN=$(find $GITHUB_WORKSPACE -name "clang" -type f | head -n 1 | xargs dirname)
-          export PATH=$CLANG_BIN:$PATH
-          
-          # 生成 GKI 配置
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
-               CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
+          cd AnyKernel3
+          # Clean up AnyKernel3 template
+          rm -rf .git README.md
+          # Configure anykernel.sh for Boot Only
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
+          sed -i 's/block=\/dev\/block\/td/block=auto/g' anykernel.sh
+          # Copy compiled kernel Image
+          cp ../kernel_src/out/arch/arm64/boot/Image .
+          # Copy KernelSU-Next modules and daemon
+          mkdir -p patch/system/lib/modules
+          mkdir -p patch/system/bin
+          cp ../kernel_src/out/KernelSU-Next/kernel/kernelsu.ko patch/system/lib/modules/
+          cp ../kernel_src/out/KernelSU-Next/kernel/ksud patch/system/bin/
+          # Zip the AnyKernel3 package
+          zip -r9 "AnyKernel3-GKI-KSU-Fengchi-ZyCClang-${{ github.run_id }}.zip" *
 
-          # 开启 Kprobes (混合钩子必须)
-          ./scripts/config --file out/.config --enable CONFIG_KPROBES
-          ./scripts/config --file out/.config --enable CONFIG_KSU
-          
-          # 核心：将优化从 O2 切换为更稳健的 O3
-          ./scripts/config --file out/.config --disable CONFIG_CC_OPTIMIZE_FOR_SIZE
-          ./scripts/config --file out/.config --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
-
-      - name: 6️⃣ 执行编译 (屏蔽优化警告)
-        run: |
-          cd ${{ env.KERNEL_ROOT }}
-          CLANG_BIN=$(find $GITHUB_WORKSPACE -name "clang" -type f | head -n 1 | xargs dirname)
-          export PATH=$CLANG_BIN:$PATH
-          
-          # 注入 -O3 优化，并使用 -Wno-error 彻底屏蔽 O3 带来的冗余警告
-          make -j$(nproc --all) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 \
-               CROSS_COMPILE=aarch64-linux-gnu- \
-               KCFLAGS="-O3 -Wno-error -w -pipe"
-
-      - name: 7️⃣ AnyKernel3 打包
-        run: |
-          cd $GITHUB_WORKSPACE
-          git clone https://github.com/osm0sis/AnyKernel3
-          IMG_PATH=$(find ${{ env.KERNEL_ROOT }}/out -name "Image" -type f | head -n 1)
-          if [ -n "$IMG_PATH" ]; then
-            cp $IMG_PATH AnyKernel3/
-            cd AnyKernel3 && zip -r9 ../Ace5U-O3-Final.zip *
-          else
-            echo "❌ 编译失败，未产出 Image" && exit 1
-          fi
-
-      - name: 📤 上传刷入包
+      - name: Upload AnyKernel3 Zip
         uses: actions/upload-artifact@v4
         with:
-          name: Ace5U-Result
-          path: Ace5U-O3-Final.zip
+          name: AnyKernel3-Flashable-Zip
+          path: AnyKernel3/AnyKernel3-GKI-KSU-Fengchi-ZyCClang-${{ github.run_id }}.zip
+
+      - name: Upload Kernel Artifacts (Raw)
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-raw-artifacts
+          path: kernel_src/out/arch/arm64/boot/Image
+          path: kernel_src/out/KernelSU-Next/kernel/kernelsu.ko
+          path: kernel_src/out/KernelSU-Next/kernel/ksud
