@@ -1,4 +1,4 @@
-name: Build GKI Kernel with KernelSU-Next, Fengchi, ZyC Clang (Fixed), LZ4 v1.10.0 (MTK) - Raw Image
+name: Build GKI Kernel with KernelSU-Next, Fengchi, ZyC Clang (Fixed Trigger), LZ4 v1.10.0 (MTK) - Raw Image
 
 on:
   workflow_dispatch:
