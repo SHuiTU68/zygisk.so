@@ -16,7 +16,7 @@ on:
 
 jobs:
   build:
-    # 使用 22.04 避开新版本系统的工具链死锁 BUG
+    # 使用 22.04 避开 24.04 常见的编译工具链死锁问题
     runs-on: ubuntu-22.04
     steps:
       - name: Maximize Space
@@ -38,12 +38,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-kernel-ccache-
 
-      - name: Install Dependencies
+      - name: 补全编译环境
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          # 补全了针对天玑平台的所有编译工具
           sudo apt-get install -y -qq --no-install-recommends \
             bc bison build-essential ccache curl flex g++-aarch64-linux-gnu \
             gcc-aarch64-linux-gnu git gnupg gperf lib32ncurses5-dev lib32z1-dev \
@@ -51,13 +50,14 @@ jobs:
             lzop rsync schedtool squashfs-tools zip zlib1g-dev python3 \
             python2 mtools libyaml-dev libfdt-dev llvm lld
 
-      - name: Download Toolchain (AOSP Clang 18)
+      - name: Download Toolchain
         run: |
           mkdir -p $GITHUB_WORKSPACE/clang
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz -O clang.tar.gz
           tar -xf clang.tar.gz -C $GITHUB_WORKSPACE/clang/
 
       - name: Clone Kernel Source
+        # 已经根据你的要求，拉取指定的 PLC110 源码仓库和分支
         run: |
           git clone --depth=1 https://github.com/hubai7285-code/android_kernel_oneplus_mt6991v1.git -b oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra kernel_source
 
@@ -65,28 +65,31 @@ jobs:
         run: |
           cd kernel_source
           
-          # 1. 自动定位配置文件 (修复 ambiguous redirect BUG)
+          # 1. 核心修复：解决 ambiguous redirect。通过 head -n 1 确保变量只有一个路径
           SEARCH_RESULT=$(find arch/arm64/configs -name "*mt6991*" | grep "oplus" | head -n 1)
           if [ -z "$SEARCH_RESULT" ]; then
             SEARCH_RESULT=$(find arch/arm64/configs -name "*mt6991*" | head -n 1)
           fi
-          echo "确定配置文件路径: $SEARCH_RESULT"
-          echo "MY_DEFCONFIG=$(basename $SEARCH_RESULT)" >> $GITHUB_ENV
+          
+          echo "最终选定的配置文件: $SEARCH_RESULT"
+          # 导出给后续步骤
+          echo "MY_DEFCONFIG=$(basename "$SEARCH_RESULT")" >> $GITHUB_ENV
           TARGET_CONF=$SEARCH_RESULT
 
-          # 2. 应用风驰补丁 (CCTV)
+          # 2. 应用风驰补丁
           curl -LO https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
           patch -p1 < fengchi.patch || echo "Patch offsets detected"
 
           # 3. 集成 KSU-Next (Pershoot)
           if [ "${{ github.event.inputs.INCLUDE_KSUNEXT }}" == "true" ]; then
             curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+            # 必须使用引号包裹变量，防止写入错误
             echo "CONFIG_KSU=y" >> "$TARGET_CONF"
             echo "CONFIG_KSU_NEXT=y" >> "$TARGET_CONF"
             scripts/config --file "$TARGET_CONF" -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
           fi
           
-          # 4. 集成 SUSFS (Android 15-6.6 分支)
+          # 4. 集成 SUSFS
           if [ "${{ github.event.inputs.INCLUDE_SUSFS }}" == "true" ]; then
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 $GITHUB_WORKSPACE/susfs4ksu
             cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/* fs/
@@ -108,31 +111,26 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export LLVM=1
           export LLVM_IAS=1
-          
-          # 激活 ccache 提速
           export USE_CCACHE=1
           export CCACHE_DIR=~/.ccache
           ccache -M 20G
           
-          # 使用自动找到的配置名进行 make
-          make O=out ARCH=arm64 ${{ env.MY_DEFCONFIG }}
+          # 执行编译
+          make O=out ARCH=arm64 "${{ env.MY_DEFCONFIG }}"
           scripts/config --file out/.config -e LTO_CLANG_THIN
-          
           make -j$(nproc) O=out ARCH=arm64 CC="ccache clang" LLVM=1 LLVM_IAS=1
 
-      - name: Pack AnyKernel3 (保留原厂驱动逻辑)
+      - name: Pack AnyKernel3 (PLC110 适配)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cd AnyKernel3
           rm -rf .git README.md
           cp ../kernel_source/out/arch/arm64/boot/Image ./
           
-          # 适配 PLC110 动态分区
+          # 修正 A/B 分区逻辑并保留原厂驱动模块
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's/block=\/dev\/block\/td/block=boot/g' anykernel.sh
           sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
-          
-          # 核心修正：保留原厂模块防止传感器失效
           sed -i 's/keep_segments=0/keep_segments=1/g' anykernel.sh
           
           zip -r9 ../PLC110-Ultimate-Kernel.zip *
