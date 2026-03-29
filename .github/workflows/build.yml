@@ -1,139 +1,125 @@
-name: Build GKI Kernel (Perfect Trigger)
+name: Build PLC110 Ultimate (Fengchi + KSU-Next + SUSFS)
 
 on:
-  push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
     inputs:
-      KSU_BRANCH:
-        description: 'KernelSU-Next branch'
+      INCLUDE_SUSFS:
+        description: '是否集成 SUSFS (Android 15-6.6 分支)'
         required: true
-        default: 'dev'
-      KSU_REPO:
-        description: 'KernelSU-Next repository'
+        default: true
+        type: boolean
+      INCLUDE_KSUNEXT:
+        description: '是否集成 Pershoot KSU-Next (混合钩子)'
         required: true
-        default: 'pershoot/KernelSU-Next'
-      KERNEL_BRANCH:
-        description: 'Kernel source branch'
+        default: true
+        type: boolean
+      ENABLE_LTO:
+        description: '开启 LTO 优化 (建议开启)'
         required: true
-        default: 'oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra'
-      KERNEL_REPO:
-        description: 'Kernel source repository'
-        required: true
-        default: 'hubai7285-code/android_kernel_oneplus_mt6991v1'
-      DEFCONFIG:
-        description: 'Kernel defconfig file'
-        required: true
-        default: 'gki_defconfig'
-      FENGCHI_PATCH_REPO:
-        description: 'Fengchi patch repository'
-        required: true
-        default: 'cctv18/oppo_oplus_realme_sm8750'
-      FENGCHI_PATCH_PATH:
-        description: 'Path to fengchi.patch'
-        required: true
-        default: 'other_patch/fengchi.patch'
-      ANYKERNEL3_REPO:
-        description: 'AnyKernel3 repository'
-        required: true
-        default: 'osm0sis/AnyKernel3'
+        default: true
+        type: boolean
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Maximize Space
+        uses: easimon/maximize-build-space@master
         with:
-          repository: ${{ github.event.inputs.KERNEL_REPO || 'hubai7285-code/android_kernel_oneplus_mt6991v1' }}
-          ref: ${{ github.event.inputs.KERNEL_BRANCH || 'oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra' }}
-          path: kernel_src
+          root-reserve-mb: 8192
+          remove-dotnet: 'true'
+          remove-android: 'true'
 
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ github.event.inputs.KSU_REPO || 'pershoot/KernelSU-Next' }}
-          ref: ${{ github.event.inputs.KSU_BRANCH || 'dev' }}
-          path: KernelSU-Next
-
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ github.event.inputs.FENGCHI_PATCH_REPO || 'cctv18/oppo_oplus_realme_sm8750' }}
-          path: fengchi_patch_repo
-
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ github.event.inputs.ANYKERNEL3_REPO || 'osm0sis/AnyKernel3' }}
-          path: AnyKernel3
-
-      - name: Setup Environment & Clang (API) & LZ4
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libncurses-dev flex bison openssl libssl-dev dkms libelf-dev libudev-dev libpci-dev libiberty-dev autoconf lz4 zstd bc curl
-          echo "Fetching latest ZyC Clang via API..."
-          RELEASE_DATA=$(curl -s https://api.github.com/repos/ZyCromerZ/Clang/releases/latest)
-          CLANG_URL=$(echo "$RELEASE_DATA" | grep "browser_download_url" | grep ".tar.gz" | head -n 1 | cut -d '"' -f 4)
-          if [ -z "$CLANG_URL" ]; then CLANG_URL="https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20260208-release/Clang-15.0.7-20260208.tar.gz"; fi
-          wget -q "$CLANG_URL" -O clang.tar.gz
-          mkdir -p clang && tar -xf clang.tar.gz -C clang
-          echo "PATH=$(pwd)/clang/bin:$PATH" >> $GITHUB_ENV
-          echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "CROSS_COMPILE_ARM64=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=$(pwd)/clang/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-          wget -q https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz
-          tar -xf lz4-1.10.0.tar.gz && cd lz4-1.10.0 && make -j$(nproc) && sudo make install && cd ..
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-aarch64-linux-gnu gcc-aarch64-linux-gnu git gnupg gperf lib32ncurses5-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libssl-dev libxml2-utils lzop rsync schedtool squashfs-tools zip zlib1g-dev python3
 
-      - name: Apply Patches & Configure Kernel
+      - name: Download Toolchain
         run: |
-          cd kernel_src
-          git apply --directory=./ ../fengchi_patch_repo/${{ github.event.inputs.FENGCHI_PATCH_PATH || 'other_patch/fengchi.patch' }}
-          [ -d lib/lz4 ] || mkdir -p lib/lz4
-          [ -d include/linux ] || mkdir -p include/linux
-          cp ../lz4-1.10.0/lib/lz4.c lib/lz4/lz4_decompress.c
-          cp ../lz4-1.10.0/lib/lz4.h include/linux/lz4.h
-          sed -i 's/memcpy/LZ4_memcpy/g' lib/lz4/lz4_decompress.c
-          echo "#define LZ4_memcpy __builtin_memcpy" >> include/linux/lz4.h
-          chmod +x ../KernelSU-Next/kernel/setup.sh
-          ../KernelSU-Next/kernel/setup.sh
-          DEFCONFIG=${{ github.event.inputs.DEFCONFIG || 'gki_defconfig' }}
-          scripts/config --file arch/arm64/configs/$DEFCONFIG -e KERNELSU -e KERNELSU_MODULE_MODE -e KERNELSU_HYBRID_HOOK
-          scripts/config --file arch/arm64/configs/$DEFCONFIG -e KERNEL_LZ4 -e RD_LZ4
-          scripts/config --file arch/arm64/configs/$DEFCONFIG -d KERNEL_GZIP -d KERNEL_LZO -d KERNEL_XZ -d KERNEL_ZSTD
-          scripts/config --file arch/arm64/configs/$DEFCONFIG -d KERNEL_IMAGE_COMPRESSION_LZ4 -d KERNEL_IMAGE_COMPRESSION_GZIP -d KERNEL_IMAGE_COMPRESSION_ZSTD
+          mkdir -p $GITHUB_WORKSPACE/clang
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz -O clang.tar.gz
+          tar -xf clang.tar.gz -C $GITHUB_WORKSPACE/clang/
 
-      - name: Build Kernel
+      - name: Checkout Source
         run: |
-          cd kernel_src
-          mkdir -p out
-          DEFCONFIG=${{ github.event.inputs.DEFCONFIG || 'gki_defconfig' }}
-          make O=out ARCH=arm64 $DEFCONFIG
-          make -j$(nproc) O=out ARCH=arm64 \
-            CC="clang" LD="ld.lld" AR="llvm-ar" NM="llvm-nm" OBJCOPY="llvm-objcopy" OBJDUMP="llvm-objdump" STRIP="llvm-strip" \
-            LLVM=1 LLVM_IAS=1
+          git clone --depth=1 https://github.com/hubai7285-code/android_kernel_oneplus_mt6991v1.git -b oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra kernel_source
 
-      - name: Prepare AnyKernel3 Package
+      - name: Apply Fengchi Patch
         run: |
+          cd kernel_source
+          curl -LO https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
+          patch -p1 < fengchi.patch || echo "风驰补丁应用时存在偏移，请检查日志"
+
+      - name: Setup KernelSU-Next
+        if: github.event.inputs.INCLUDE_KSUNEXT == 'true'
+        run: |
+          cd kernel_source
+          # 注入 Pershoot 的混合钩子逻辑
+          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          
+          # 基础 KSU 配置开启
+          echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/mt6991_defconfig
+          echo "CONFIG_KSU_NEXT=y" >> arch/arm64/configs/vendor/mt6991_defconfig
+          scripts/config --file arch/arm64/configs/vendor/mt6991_defconfig -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
+
+      - name: Setup SUSFS
+        if: github.event.inputs.INCLUDE_SUSFS == 'true'
+        run: |
+          cd kernel_source
+          # 拉取 SUSFS 安卓 15-6.6 专用分支
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 $GITHUB_WORKSPACE/susfs4ksu
+          
+          # 1. 复制内核补丁文件
+          cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/* fs/
+          cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/* include/linux/
+          
+          # 2. 应用内核补丁
+          patch -p1 < $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_recipe_susfs.patch || echo "SUSFS 内核补丁存在冲突"
+          
+          # 3. 如果集成了 KSU，则应用 KSU 端的 SUSFS 补丁
+          if [ "${{ github.event.inputs.INCLUDE_KSUNEXT }}" == "true" ]; then
+            cd kernel/ksu
+            patch -p1 < $GITHUB_WORKSPACE/susfs4ksu/ksu_patches/susfs_for_ksu_next.patch || echo "SUSFS KSU 补丁冲突"
+            cd ../..
+          fi
+          
+          # 4. 开启 SUSFS 配置
+          echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/vendor/mt6991_defconfig
+
+      - name: Compilation
+        run: |
+          cd kernel_source
+          export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export LLVM=1
+          export LLVM_IAS=1
+          
+          make O=out ARCH=arm64 vendor/mt6991_defconfig
+          
+          if [ "${{ github.event.inputs.ENABLE_LTO }}" == "true" ]; then
+            scripts/config --file out/.config -e LTO_CLANG_THIN
+          fi
+          
+          make -j$(nproc) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1
+
+      - name: Pack AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git
           cd AnyKernel3
           rm -rf .git README.md
+          cp ../kernel_source/out/arch/arm64/boot/Image ./
+          
+          # 适配 PLC110 A/B boot 分区
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
-          sed -i 's/block=\/dev\/block\/td/block=auto/g' anykernel.sh
-          cp ../kernel_src/out/arch/arm64/boot/Image .
-          mkdir -p patch/system/lib/modules patch/system/bin
-          cp ../kernel_src/out/KernelSU-Next/kernel/kernelsu.ko patch/system/lib/modules/
-          cp ../kernel_src/out/KernelSU-Next/kernel/ksud patch/system/bin/
-          zip -r9 "AnyKernel3-GKI-KSU-Fengchi-ZyCClang-RawImage-Full-${{ github.run_id }}.zip" *
+          sed -i 's/block=\/dev\/block\/td/block=boot/g' anykernel.sh
+          sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
+          
+          zip -r9 ../PLC110-Ultimate-Kernel.zip *
 
-      - name: Upload AnyKernel3 Zip
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: AnyKernel3-Flashable-Zip
-          path: AnyKernel3/AnyKernel3-GKI-KSU-Fengchi-ZyCClang-RawImage-Full-${{ github.run_id }}.zip
-
-      - name: Upload Kernel Artifacts (Raw)
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-raw-artifacts
-          path: kernel_src/out/arch/arm64/boot/Image
-          path: kernel_src/out/KernelSU-Next/kernel/kernelsu.ko
-          path: kernel_src/out/KernelSU-Next/kernel/ksud
+          name: PLC110-Kernel-Fengchi-KSUN-SUSFS
+          path: PLC110-Ultimate-Kernel.zip
