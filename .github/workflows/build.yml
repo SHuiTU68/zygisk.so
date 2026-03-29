@@ -16,6 +16,7 @@ on:
 
 jobs:
   build:
+    # 使用 22.04 避开新版本系统的工具链死锁 BUG
     runs-on: ubuntu-22.04
     steps:
       - name: Maximize Space
@@ -37,12 +38,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-kernel-ccache-
 
-      - name: 补全终极编译环境
+      - name: Install Dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          # 补齐了天玑平台可能用到的所有依赖 (libncurses, libssl, mtools, gperf 等)
+          # 补全了针对天玑平台的所有编译工具
           sudo apt-get install -y -qq --no-install-recommends \
             bc bison build-essential ccache curl flex g++-aarch64-linux-gnu \
             gcc-aarch64-linux-gnu git gnupg gperf lib32ncurses5-dev lib32z1-dev \
@@ -64,16 +65,15 @@ jobs:
         run: |
           cd kernel_source
           
-          # 1. 自动定位配置文件 (修复 No such file BUG)
-          # 优先找 oplus 命名的配置，这是天玑一加源码的习惯
-          CONF_PATH=$(find arch/arm64/configs -name "*mt6991*" | head -n 1)
-          if [ -z "$CONF_PATH" ]; then
-            CONF_PATH=$(find arch/arm64/configs -name "*defconfig" | grep -iE "oplus|vendor" | head -n 1)
+          # 1. 自动定位配置文件 (修复 ambiguous redirect BUG)
+          SEARCH_RESULT=$(find arch/arm64/configs -name "*mt6991*" | grep "oplus" | head -n 1)
+          if [ -z "$SEARCH_RESULT" ]; then
+            SEARCH_RESULT=$(find arch/arm64/configs -name "*mt6991*" | head -n 1)
           fi
-          echo "确定配置文件路径: $CONF_PATH"
-          # 存入环境变量给下一步使用
-          echo "MY_DEFCONFIG=$(basename $CONF_PATH)" >> $GITHUB_ENV
-          
+          echo "确定配置文件路径: $SEARCH_RESULT"
+          echo "MY_DEFCONFIG=$(basename $SEARCH_RESULT)" >> $GITHUB_ENV
+          TARGET_CONF=$SEARCH_RESULT
+
           # 2. 应用风驰补丁 (CCTV)
           curl -LO https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
           patch -p1 < fengchi.patch || echo "Patch offsets detected"
@@ -81,12 +81,12 @@ jobs:
           # 3. 集成 KSU-Next (Pershoot)
           if [ "${{ github.event.inputs.INCLUDE_KSUNEXT }}" == "true" ]; then
             curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-            echo "CONFIG_KSU=y" >> $CONF_PATH
-            echo "CONFIG_KSU_NEXT=y" >> $CONF_PATH
-            scripts/config --file $CONF_PATH -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
+            echo "CONFIG_KSU=y" >> "$TARGET_CONF"
+            echo "CONFIG_KSU_NEXT=y" >> "$TARGET_CONF"
+            scripts/config --file "$TARGET_CONF" -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
           fi
           
-          # 4. 集成 SUSFS
+          # 4. 集成 SUSFS (Android 15-6.6 分支)
           if [ "${{ github.event.inputs.INCLUDE_SUSFS }}" == "true" ]; then
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 $GITHUB_WORKSPACE/susfs4ksu
             cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/* fs/
@@ -97,7 +97,7 @@ jobs:
                 patch -p1 < $GITHUB_WORKSPACE/susfs4ksu/ksu_patches/susfs_for_ksu_next.patch || true
                 cd ../..
             fi
-            echo "CONFIG_KSU_SUSFS=y" >> $CONF_PATH
+            echo "CONFIG_KSU_SUSFS=y" >> "$TARGET_CONF"
           fi
 
       - name: Compilation
@@ -109,25 +109,32 @@ jobs:
           export LLVM=1
           export LLVM_IAS=1
           
+          # 激活 ccache 提速
           export USE_CCACHE=1
           export CCACHE_DIR=~/.ccache
           ccache -M 20G
           
-          # 使用自动找到的配置名
+          # 使用自动找到的配置名进行 make
           make O=out ARCH=arm64 ${{ env.MY_DEFCONFIG }}
           scripts/config --file out/.config -e LTO_CLANG_THIN
           
           make -j$(nproc) O=out ARCH=arm64 CC="ccache clang" LLVM=1 LLVM_IAS=1
 
-      - name: Pack AnyKernel3
+      - name: Pack AnyKernel3 (保留原厂驱动逻辑)
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git
           cd AnyKernel3
           rm -rf .git README.md
           cp ../kernel_source/out/arch/arm64/boot/Image ./
+          
+          # 适配 PLC110 动态分区
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's/block=\/dev\/block\/td/block=boot/g' anykernel.sh
           sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
+          
+          # 核心修正：保留原厂模块防止传感器失效
+          sed -i 's/keep_segments=0/keep_segments=1/g' anykernel.sh
+          
           zip -r9 ../PLC110-Ultimate-Kernel.zip *
 
       - name: Upload Artifact
