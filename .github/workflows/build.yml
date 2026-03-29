@@ -1,27 +1,23 @@
-name: Build PLC110 Ultimate (Fengchi + KSU-Next + SUSFS)
+name: Build PLC110 Ultimate (Fengchi + KSUN + SUSFS)
 
 on:
   workflow_dispatch:
     inputs:
       INCLUDE_SUSFS:
-        description: '是否集成 SUSFS (Android 15-6.6 分支)'
+        description: '是否集成 SUSFS (Android 15-6.6)'
         required: true
         default: true
         type: boolean
       INCLUDE_KSUNEXT:
-        description: '是否集成 Pershoot KSU-Next (混合钩子)'
-        required: true
-        default: true
-        type: boolean
-      ENABLE_LTO:
-        description: '开启 LTO 优化 (建议开启)'
+        description: '是否集成 Pershoot KSU-Next'
         required: true
         default: true
         type: boolean
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    # 核心修正：降级到 22.04 避免 24.04 的工具链假死 BUG
+    runs-on: ubuntu-22.04
     steps:
       - name: Maximize Space
         uses: easimon/maximize-build-space@master
@@ -29,19 +25,34 @@ jobs:
           root-reserve-mb: 8192
           remove-dotnet: 'true'
           remove-android: 'true'
+          remove-haskell: 'true'
+
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-kernel-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-kernel-ccache-
 
       - name: Install Dependencies
+        # 核心修正：DEBIAN_FRONTEND 防止安装过程中的交互式弹窗导致卡死
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-aarch64-linux-gnu gcc-aarch64-linux-gnu git gnupg gperf lib32ncurses5-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libssl-dev libxml2-utils lzop rsync schedtool squashfs-tools zip zlib1g-dev python3
+          sudo apt-get install -y -qq --no-install-recommends bc bison build-essential ccache curl flex g++-aarch64-linux-gnu gcc-aarch64-linux-gnu git gnupg gperf lib32ncurses5-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libssl-dev libxml2-utils lzop rsync schedtool squashfs-tools zip zlib1g-dev python3
 
-      - name: Download Toolchain
+      - name: Download Toolchain (AOSP Clang 18)
         run: |
           mkdir -p $GITHUB_WORKSPACE/clang
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz -O clang.tar.gz
           tar -xf clang.tar.gz -C $GITHUB_WORKSPACE/clang/
 
-      - name: Checkout Source
+      - name: Clone Kernel Source
         run: |
           git clone --depth=1 https://github.com/hubai7285-code/android_kernel_oneplus_mt6991v1.git -b oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra kernel_source
 
@@ -49,43 +60,32 @@ jobs:
         run: |
           cd kernel_source
           curl -LO https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          patch -p1 < fengchi.patch || echo "风驰补丁应用时存在偏移，请检查日志"
+          patch -p1 < fengchi.patch || echo "Patch applied with offsets"
 
-      - name: Setup KernelSU-Next
-        if: github.event.inputs.INCLUDE_KSUNEXT == 'true'
+      - name: Setup KernelSU-Next & SUSFS
         run: |
           cd kernel_source
-          # 注入 Pershoot 的混合钩子逻辑
-          curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-          
-          # 基础 KSU 配置开启
-          echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/mt6991_defconfig
-          echo "CONFIG_KSU_NEXT=y" >> arch/arm64/configs/vendor/mt6991_defconfig
-          scripts/config --file arch/arm64/configs/vendor/mt6991_defconfig -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
-
-      - name: Setup SUSFS
-        if: github.event.inputs.INCLUDE_SUSFS == 'true'
-        run: |
-          cd kernel_source
-          # 拉取 SUSFS 安卓 15-6.6 专用分支
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 $GITHUB_WORKSPACE/susfs4ksu
-          
-          # 1. 复制内核补丁文件
-          cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/* fs/
-          cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/* include/linux/
-          
-          # 2. 应用内核补丁
-          patch -p1 < $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_recipe_susfs.patch || echo "SUSFS 内核补丁存在冲突"
-          
-          # 3. 如果集成了 KSU，则应用 KSU 端的 SUSFS 补丁
+          # 集成 Pershoot KSU-Next
           if [ "${{ github.event.inputs.INCLUDE_KSUNEXT }}" == "true" ]; then
-            cd kernel/ksu
-            patch -p1 < $GITHUB_WORKSPACE/susfs4ksu/ksu_patches/susfs_for_ksu_next.patch || echo "SUSFS KSU 补丁冲突"
-            cd ../..
+            curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+            echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/mt6991_defconfig
+            echo "CONFIG_KSU_NEXT=y" >> arch/arm64/configs/vendor/mt6991_defconfig
+            scripts/config --file arch/arm64/configs/vendor/mt6991_defconfig -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
           fi
           
-          # 4. 开启 SUSFS 配置
-          echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/vendor/mt6991_defconfig
+          # 集成 SUSFS
+          if [ "${{ github.event.inputs.INCLUDE_SUSFS }}" == "true" ]; then
+            git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 $GITHUB_WORKSPACE/susfs4ksu
+            cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/* fs/
+            cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/* include/linux/
+            patch -p1 < $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_recipe_susfs.patch || true
+            if [ "${{ github.event.inputs.INCLUDE_KSUNEXT }}" == "true" ]; then
+                cd kernel/ksu
+                patch -p1 < $GITHUB_WORKSPACE/susfs4ksu/ksu_patches/susfs_for_ksu_next.patch || true
+                cd ../..
+            fi
+            echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/vendor/mt6991_defconfig
+          fi
 
       - name: Compilation
         run: |
@@ -96,13 +96,17 @@ jobs:
           export LLVM=1
           export LLVM_IAS=1
           
+          # 激活 ccache
+          export USE_CCACHE=1
+          export CCACHE_DIR=~/.ccache
+          ccache -M 20G
+          
           make O=out ARCH=arm64 vendor/mt6991_defconfig
+          # 默认开启 Thin LTO
+          scripts/config --file out/.config -e LTO_CLANG_THIN
           
-          if [ "${{ github.event.inputs.ENABLE_LTO }}" == "true" ]; then
-            scripts/config --file out/.config -e LTO_CLANG_THIN
-          fi
-          
-          make -j$(nproc) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1
+          # 使用 ccache 编译
+          make -j$(nproc) O=out ARCH=arm64 CC="ccache clang" LLVM=1 LLVM_IAS=1
 
       - name: Pack AnyKernel3
         run: |
@@ -110,16 +114,14 @@ jobs:
           cd AnyKernel3
           rm -rf .git README.md
           cp ../kernel_source/out/arch/arm64/boot/Image ./
-          
-          # 适配 PLC110 A/B boot 分区
+          # 适配 PLC110 动态分区
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's/block=\/dev\/block\/td/block=boot/g' anykernel.sh
           sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
-          
           zip -r9 ../PLC110-Ultimate-Kernel.zip *
 
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PLC110-Kernel-Fengchi-KSUN-SUSFS
+          name: PLC110-Kernel-Final
           path: PLC110-Ultimate-Kernel.zip
