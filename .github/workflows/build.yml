@@ -16,7 +16,6 @@ on:
 
 jobs:
   build:
-    # 核心修正：降级到 22.04 避免 24.04 的工具链假死 BUG
     runs-on: ubuntu-22.04
     steps:
       - name: Maximize Space
@@ -38,13 +37,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-kernel-ccache-
 
-      - name: Install Dependencies
-        # 核心修正：DEBIAN_FRONTEND 防止安装过程中的交互式弹窗导致卡死
+      - name: 补全终极编译环境
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update
-          sudo apt-get install -y -qq --no-install-recommends bc bison build-essential ccache curl flex g++-aarch64-linux-gnu gcc-aarch64-linux-gnu git gnupg gperf lib32ncurses5-dev lib32z1-dev libelf-dev liblz4-tool libncurses5-dev libssl-dev libxml2-utils lzop rsync schedtool squashfs-tools zip zlib1g-dev python3
+          # 补齐了天玑平台可能用到的所有依赖 (libncurses, libssl, mtools, gperf 等)
+          sudo apt-get install -y -qq --no-install-recommends \
+            bc bison build-essential ccache curl flex g++-aarch64-linux-gnu \
+            gcc-aarch64-linux-gnu git gnupg gperf lib32ncurses5-dev lib32z1-dev \
+            libelf-dev liblz4-tool libncurses5-dev libssl-dev libxml2-utils \
+            lzop rsync schedtool squashfs-tools zip zlib1g-dev python3 \
+            python2 mtools libyaml-dev libfdt-dev llvm lld
 
       - name: Download Toolchain (AOSP Clang 18)
         run: |
@@ -56,35 +60,44 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/hubai7285-code/android_kernel_oneplus_mt6991v1.git -b oneplus/mt6991_b_16.0.0_oneplus_ace5_ultra kernel_source
 
-      - name: Apply Fengchi Patch
+      - name: Setup KSU, SUSFS & Path Fix
         run: |
           cd kernel_source
+          
+          # 1. 自动定位配置文件 (修复 No such file BUG)
+          # 优先找 oplus 命名的配置，这是天玑一加源码的习惯
+          CONF_PATH=$(find arch/arm64/configs -name "*mt6991*" | head -n 1)
+          if [ -z "$CONF_PATH" ]; then
+            CONF_PATH=$(find arch/arm64/configs -name "*defconfig" | grep -iE "oplus|vendor" | head -n 1)
+          fi
+          echo "确定配置文件路径: $CONF_PATH"
+          # 存入环境变量给下一步使用
+          echo "MY_DEFCONFIG=$(basename $CONF_PATH)" >> $GITHUB_ENV
+          
+          # 2. 应用风驰补丁 (CCTV)
           curl -LO https://raw.githubusercontent.com/SHuiTU68/oppo_oplus_realme_sm8750/main/other_patch/fengchi.patch
-          patch -p1 < fengchi.patch || echo "Patch applied with offsets"
+          patch -p1 < fengchi.patch || echo "Patch offsets detected"
 
-      - name: Setup KernelSU-Next & SUSFS
-        run: |
-          cd kernel_source
-          # 集成 Pershoot KSU-Next
+          # 3. 集成 KSU-Next (Pershoot)
           if [ "${{ github.event.inputs.INCLUDE_KSUNEXT }}" == "true" ]; then
             curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/next/kernel/setup.sh" | bash -s next
-            echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/mt6991_defconfig
-            echo "CONFIG_KSU_NEXT=y" >> arch/arm64/configs/vendor/mt6991_defconfig
-            scripts/config --file arch/arm64/configs/vendor/mt6991_defconfig -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
+            echo "CONFIG_KSU=y" >> $CONF_PATH
+            echo "CONFIG_KSU_NEXT=y" >> $CONF_PATH
+            scripts/config --file $CONF_PATH -e KPROBES -e HAVE_KPROBES -e KPROBE_EVENTS
           fi
           
-          # 集成 SUSFS
+          # 4. 集成 SUSFS
           if [ "${{ github.event.inputs.INCLUDE_SUSFS }}" == "true" ]; then
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 $GITHUB_WORKSPACE/susfs4ksu
             cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/fs/* fs/
             cp $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/include/linux/* include/linux/
             patch -p1 < $GITHUB_WORKSPACE/susfs4ksu/kernel_patches/50_recipe_susfs.patch || true
-            if [ "${{ github.event.inputs.INCLUDE_KSUNEXT }}" == "true" ]; then
+            if [ -d "kernel/ksu" ]; then
                 cd kernel/ksu
                 patch -p1 < $GITHUB_WORKSPACE/susfs4ksu/ksu_patches/susfs_for_ksu_next.patch || true
                 cd ../..
             fi
-            echo "CONFIG_KSU_SUSFS=y" >> arch/arm64/configs/vendor/mt6991_defconfig
+            echo "CONFIG_KSU_SUSFS=y" >> $CONF_PATH
           fi
 
       - name: Compilation
@@ -96,16 +109,14 @@ jobs:
           export LLVM=1
           export LLVM_IAS=1
           
-          # 激活 ccache
           export USE_CCACHE=1
           export CCACHE_DIR=~/.ccache
           ccache -M 20G
           
-          make O=out ARCH=arm64 vendor/mt6991_defconfig
-          # 默认开启 Thin LTO
+          # 使用自动找到的配置名
+          make O=out ARCH=arm64 ${{ env.MY_DEFCONFIG }}
           scripts/config --file out/.config -e LTO_CLANG_THIN
           
-          # 使用 ccache 编译
           make -j$(nproc) O=out ARCH=arm64 CC="ccache clang" LLVM=1 LLVM_IAS=1
 
       - name: Pack AnyKernel3
@@ -114,7 +125,6 @@ jobs:
           cd AnyKernel3
           rm -rf .git README.md
           cp ../kernel_source/out/arch/arm64/boot/Image ./
-          # 适配 PLC110 动态分区
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' anykernel.sh
           sed -i 's/block=\/dev\/block\/td/block=boot/g' anykernel.sh
           sed -i 's/is_slot_device=0/is_slot_device=1/g' anykernel.sh
